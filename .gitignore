@@ -1,0 +1,30 @@
+# Database lokal (sangat bagus untuk diabaikan agar data testing tidak masuk repo)
+test_toko.db
+
+# Environment Virtual Python
+venv/
+.venv/
+
+# Environment Variables / Kunci Rahasia (Wajib diabaikan demi keamanan)
+.env
+back-end/.env
+
+# Python bytecode (Mengabaikan __pycache__ di semua direktori)
+**/__pycache__/
+*.py[cod]
+
+# File kompresi / backup yang tidak diperlukan di Git
+back-end/back-and_DBManager.zip
+*.zip
+*.tar.gz
+
+# Catatan: File di folder front-end (api.md, api.js, index.html, dll) 
+# TIDAK PERLU dimasukkan ke .gitignore jika Anda INGIN file-file tersebut 
+# masuk ke dalam repositori GitHub/GitLab agar bisa dikerjakan bersama tim.
+
+front-and/api.md
+front-and/api.js
+front-and/app.js
+front-and/index1.html
+front-and/index2.html
+front-and/style.css

@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+dotenv
+PyJwt
+types-PyJWT
+
+sqlmodel
+# Database drivers (pilih sesuai kebutuhan, jangan install semua kecuali diperlukan)
+# pymysql # MySQL driver
+# psycopg2-binary # PostgreSQL driver
