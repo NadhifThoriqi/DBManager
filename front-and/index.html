@@ -269,14 +269,22 @@
   .form-row input:focus, .form-row select:focus { outline: none; border-color: var(--accent); }
 
   /* column builder */
-  .col-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .col-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
   .col-row input, .col-row select {
     background: var(--bg-base); border: 1px solid var(--border);
     color: var(--text-primary); padding: 5px 8px; border-radius: var(--r);
     font-size: 12px; font-family: var(--sans);
   }
-  .col-row input { flex: 1; min-width: 0; }
-  .col-row select { width: 130px; flex-shrink: 0; }
+  .col-row .col-name-input { flex: 1; min-width: 110px; }
+  .col-row .col-type-select { width: 125px; flex-shrink: 0; }
+  .col-row .col-index-select { width: 115px; flex-shrink: 0; }
+  .col-row-header {
+    display: flex; gap: 6px; margin-bottom: 6px;
+    font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em;
+  }
+  .col-row-header .col-name-input { flex: 1; min-width: 110px; }
+  .col-row-header .col-type-select { width: 125px; flex-shrink: 0; }
+  .col-row-header .col-index-select { width: 115px; flex-shrink: 0; }
 
   /* ══ BUTTONS ═════════════════════════════════════════════════════ */
   .btn {
@@ -541,6 +549,11 @@
           </div>
           <hr>
           <h3>📌 Kolom</h3>
+          <div class="col-row-header">
+            <span class="col-name-input">Nama Kolom</span>
+            <span class="col-type-select">Tipe Data</span>
+            <span class="col-index-select">Index</span>
+          </div>
           <div id="col-builder"></div>
           <button class="btn sm" onclick="addColRow()">+ Tambah Kolom</button>
           <hr>
@@ -1070,12 +1083,20 @@ function addColRow() {
   const div = document.createElement('div');
   div.className = 'col-row'; div.id = `col_${colCount}`;
   div.innerHTML = `
-    <input placeholder="nama_kolom" value="${colCount === 1 ? 'id' : ''}" />
-    <select>
+    <input class="col-name-input" placeholder="nama_kolom" value="${colCount === 1 ? 'id' : ''}" />
+    <select class="col-type-select">
       <option${colCount === 1 ? ' selected' : ''}>INTEGER</option>
       <option${colCount !== 1 ? ' selected' : ''}>VARCHAR(255)</option>
       <option>TEXT</option><option>FLOAT</option><option>BOOLEAN</option>
       <option>DATE</option><option>DATETIME</option>
+    </select>
+    <select class="col-index-select" title="Tipe indeks kolom">
+      <option value="">— Tanpa Index —</option>
+      <option value="primary"${colCount === 1 ? ' selected' : ''}>PRIMARY</option>
+      <option value="unique">UNIQUE</option>
+      <option value="index">INDEX</option>
+      <option value="fulltext">FULLTEXT</option>
+      <option value="spatial">SPATIAL</option>
     </select>
     <button class="btn sm danger" onclick="this.parentElement.remove()">✕</button>`;
   $('col-builder').appendChild(div);
@@ -1090,9 +1111,10 @@ async function doCreateTable() {
   if (!rows.length) { toast('Minimal satu kolom', 'error'); return; }
   const columns_def = {};
   rows.forEach(r => {
-    const n = r.querySelector('input').value.trim();
-    const t = r.querySelector('select').value;
-    if (n) columns_def[n] = t;
+    const n = r.querySelector('.col-name-input').value.trim();
+    const t = r.querySelector('.col-type-select').value;
+    const idx = r.querySelector('.col-index-select').value;
+    if (n) columns_def[n] = { type: t, index: idx };
   });
   try {
     const r = await api('/table/create', 'POST', engineCfg({ table_name: name, columns_def }));
@@ -1159,7 +1181,7 @@ function confirmDeleteDb(name) {
       loadDatabases();
     } catch (e) { toast(e.message, 'error'); }
   });
-} primary_key
+}
 
 /* ── TABS & VIEWS ─────────────────────────────────────────────────────────── */
 function switchTab(tab) {

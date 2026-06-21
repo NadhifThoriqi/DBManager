@@ -7,5 +7,6 @@ types-PyJWT
 
 sqlmodel
 # Database drivers (pilih sesuai kebutuhan, jangan install semua kecuali diperlukan)
-# pymysql # MySQL driver
-# psycopg2-binary # PostgreSQL driver
+# pymysql asyncmy # MySQL driver
+# psycopg2-binary asyncpg # PostgreSQL driver
+# aiosqlite # SQLite driver

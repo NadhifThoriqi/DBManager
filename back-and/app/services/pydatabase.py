@@ -7,11 +7,11 @@ membuat, menampilkan daftar, dan menghapus database.
 
 Mendukung tiga jenis database:
     - SQLite     : berbasis file .db, tanpa server
-    - MySQL      : menggunakan driver pymysql
-    - PostgreSQL : menggunakan driver psycopg2
+    - MySQL      : menggunakan driver asyncmy
+    - PostgreSQL : menggunakan driver asyncpg
 
 Dependensi:
-    pip install sqlalchemy pymysql psycopg2-binary
+    pip install sqlalchemy asyncmy asyncpg-binary
 
 Struktur Modul:
     - validate_db_name   : Validasi nama database (anti SQL Injection)
@@ -27,12 +27,13 @@ import os
 import re
 
 try:
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
     from sqlalchemy.exc import ProgrammingError
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 except ImportError:
     raise ImportError(
         "sqlalchemy belum terinstall. "
-        "Install dengan: pip install sqlalchemy pymysql psycopg2-binary"
+        "Install dengan: pip install sqlalchemy asyncmy asyncpg-binary"
     )
 
 
@@ -83,13 +84,13 @@ def validate_db_name(name: str) -> str:
     return name
 
 
-def _build_url(dialect: str, host: str, user: str, password: str, port: Optional[int], database: str = "") -> str:
+async def _build_url(dialect: str, host: str, user: str, password: str, port: Optional[int], database: str = "") -> str:
     """
     Helper internal: membangun string URL koneksi SQLAlchemy.
 
     Parameters
     ----------
-    dialect  : str          - jenis driver, misal: 'mysql+pymysql', 'postgresql+psycopg2'
+    dialect  : str          - jenis driver, misal: 'mysql+asyncmy', 'postgresql+asyncpg'
     host     : str          - alamat server database
     user     : str          - username database
     password : str          - password database
@@ -102,11 +103,11 @@ def _build_url(dialect: str, host: str, user: str, password: str, port: Optional
 
     Contoh output:
     --------------
-    _build_url("mysql+pymysql", "localhost", "root", "secret", 3306, "toko_db")
-    → "mysql+pymysql://root:secret@localhost:3306/toko_db"
+    _build_url("mysql+asyncmy", "localhost", "root", "secret", 3306, "toko_db")
+    → "mysql+asyncmy://root:secret@localhost:3306/toko_db"
 
-    _build_url("postgresql+psycopg2", "localhost", "postgres", "pass", 5432)
-    → "postgresql+psycopg2://postgres:pass@localhost:5432"
+    _build_url("postgresql+asyncpg", "localhost", "postgres", "pass", 5432)
+    → "postgresql+asyncpg://postgres:pass@localhost:5432"
     """
     port_str = f":{port}" if port else ""
     db_str = f"/{database}" if database else ""
@@ -124,22 +125,22 @@ def close_connection(func: Callable[..., Any]) -> Callable[..., Any]:
     Contoh fungsi yang cocok didekorasi:
     -------------------------------------
     @close_connection
-    def mysql(self) -> Tuple[str, Any]:
+    async def mysql(self) -> Tuple[str, Any]:
         conn = engine.connect()
         conn.execute(...)
         return "pesan sukses", conn   # ← conn akan di-close otomatis
     """
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
         result = conn = None
         try:
-            result, conn = func(*args, **kwargs)
+            result, conn = await func(*args, **kwargs)
             return result
         except Exception:
             raise  # Teruskan exception ke pemanggil
         finally:
             # Tutup koneksi apapun yang terjadi
             if conn and hasattr(conn, 'close'):
-                conn.close()
+                await conn.close()
     return wrapper
 
 
@@ -184,7 +185,7 @@ class Create:
         self.port = port
         self.db_name = validate_db_name(db_name)  # Validasi sebelum disimpan
 
-    def sqlite(self) -> str:
+    async def sqlite(self) -> str:
         """
         Buat database SQLite berupa file .db di direktori saat ini.
         Jika file sudah ada, koneksi tetap berhasil (tidak error, tidak overwrite).
@@ -200,16 +201,21 @@ class Create:
         # Output: "Database SQLite 'inventaris.db' berhasil dibuat/dihubungkan."
         """
         try:
-            engine = create_engine(f"sqlite:///{self.db_name}.db")
+            engine = create_async_engine(
+                f"sqlite+aiosqlite:///{self.db_name}.db",
+                echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
+                pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            )
             # Membuka koneksi memicu pembuatan file .db secara fisik
-            with engine.connect():
+            async with engine.connect():
                 pass
             return f"Database SQLite '{self.db_name}.db' berhasil dibuat/dihubungkan."
         except Exception as e:
             raise ValueError(f"Gagal membuat database SQLite: {e}") from e
 
     @close_connection
-    def mysql(self) -> Tuple[str, Any]:
+    async def mysql(self) -> Tuple[str, AsyncConnection]:
         """
         Buat database MySQL. Menggunakan CREATE DATABASE IF NOT EXISTS,
         sehingga aman dijalankan berulang kali.
@@ -225,19 +231,24 @@ class Create:
         """
         conn = None
         if not self.port:
-            self.port = 3360
+            self.port = 3306
         try:
             # Koneksi ke MySQL server TANPA menentukan database dulu
-            url = _build_url("mysql+pymysql", self.host, self.user, self.password, self.port)
-            engine = create_engine(url)
-            conn = engine.connect()
-            conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {self.db_name}"))
+            url = await _build_url("mysql+asyncmy", self.host, self.user, self.password, self.port)
+            engine = create_async_engine(
+                url,
+                echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
+                pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            )
+            conn = await engine.connect()
+            await conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {self.db_name}"))
             return f"Database MySQL '{self.db_name}' berhasil dibuat.", conn
         except Exception as e:
             raise ValueError(f"Gagal membuat database MySQL: {e}") from e
 
     @close_connection
-    def postgresql(self) -> Tuple[str, Any]:
+    async def postgresql(self) -> Tuple[str, AsyncConnection]:
         """
         Buat database PostgreSQL.
         Terhubung ke database 'postgres' (default system db) terlebih dahulu,
@@ -258,11 +269,18 @@ class Create:
             self.port = 5432
         try:
             # AUTOCOMMIT diperlukan karena CREATE DATABASE tidak bisa dijalankan di dalam transaksi
-            url = _build_url("postgresql+psycopg2", self.host, self.user, self.password, self.port, "postgres")
-            engine = create_engine(url, isolation_level="AUTOCOMMIT")
-            conn = engine.connect()
+            url = await _build_url("postgresql+asyncpg", self.host, self.user, self.password, self.port, "postgres")
+            engine = create_async_engine(
+                url, 
+                isolation_level="AUTOCOMMIT",
+                echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
+                pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            )
+            
+            conn = await engine.connect()
             try:
-                conn.execute(text(f"CREATE DATABASE {self.db_name}"))
+                await conn.execute(text(f"CREATE DATABASE {self.db_name}"))
                 return f"Database PostgreSQL '{self.db_name}' berhasil dibuat.", conn
             except ProgrammingError:
                 # ProgrammingError muncul jika database sudah ada → bukan error fatal
@@ -310,7 +328,7 @@ class Show:
         self.password = password or ''
         self.port = port
 
-    def sqlite(self, search_dir: str = ".") -> Tuple[int, List[Tuple[str, str, int]]]:
+    async def sqlite(self, search_dir: str = ".") -> Tuple[int, List[Any]]:
         """
         Temukan semua file SQLite (.db) dalam direktori yang ditentukan.
 
@@ -353,7 +371,7 @@ class Show:
             raise ValueError(f"Error mencari file SQLite: {e}") from e
 
     @close_connection
-    def mysql(self) -> Tuple[Any, Any]:
+    async def mysql(self) -> Tuple[Tuple[int, List[Any]], AsyncConnection]:
         """
         Ambil daftar semua database di server MySQL (termasuk sistem database).
 
@@ -372,18 +390,23 @@ class Show:
         """
         conn = None
         if not self.port:
-            self.port = 3360
+            self.port = 3306
         try:
-            url = _build_url("mysql+pymysql", self.host, self.user, self.password, self.port)
-            engine = create_engine(url)
-            conn = engine.connect()
-            rows = [row[0] for row in conn.execute(text("SHOW DATABASES")).fetchall()]
+            url =  await _build_url("mysql+asyncmy", self.host, self.user, self.password, self.port)
+            engine = create_async_engine(
+                url,
+                echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
+                pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            )
+            conn = await engine.connect()
+            rows = [row[0] for row in (await conn.execute(text("SHOW DATABASES"))).fetchall()]
             return (len(rows), rows), conn
         except Exception as e:
             raise ValueError(f"Gagal mengambil daftar database MySQL: {e}") from e
 
     @close_connection
-    def postgresql(self) -> Tuple[Tuple[int, Any], Any]:
+    async def postgresql(self) -> Tuple[Tuple[int, List[Any]], AsyncConnection]:
         """
         Ambil daftar database di PostgreSQL (hanya database non-template).
 
@@ -404,14 +427,19 @@ class Show:
         if not self.port:
             self.port = 5432
         try:
-            url = _build_url("postgresql+psycopg2", self.host, self.user, self.password, self.port, "postgres")
-            engine = create_engine(url)
-            conn = engine.connect()
+            url = await _build_url("postgresql+asyncpg", self.host, self.user, self.password, self.port, "postgres")
+            engine = create_async_engine(
+                url,
+                echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
+                pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            )
+            conn = await engine.connect()
             # Hanya ambil database bukan template (template0 & template1 disembunyikan)
             rows = [
-                row[0] for row in conn.execute(
+                row[0] for row in (await conn.execute(
                     text("SELECT datname FROM pg_database WHERE datistemplate = false;")
-                ).fetchall()
+                )).fetchall()
             ]
             return (len(rows), rows), conn
         except Exception as e:
@@ -455,13 +483,13 @@ class Delete:
         host     : str          - alamat server (default: 'localhost')
         port     : Optional[int]- MySQL: 3306 | PostgreSQL: 5432
         """
-        self.db_name = validate_db_name(db_name)
+        self.db_name = db_name
         self.host = host or 'localhost'
         self.user = user or 'root'
         self.password = password or ''
         self.port = port
 
-    def sqlite(self) -> str:
+    async def sqlite(self) -> str:
         """
         Hapus file database SQLite (.db) dari sistem file.
 
@@ -483,7 +511,7 @@ class Delete:
         # Output: "File database 'tidak_ada' tidak ditemukan."
         """
         try:
-            file_path = f"{self.db_name}.db"
+            file_path = f"{self.db_name}"
             if os.path.exists(file_path):
                 os.remove(file_path)
                 return f"Database SQLite (File: '{self.db_name}') berhasil dihapus."
@@ -498,7 +526,7 @@ class Delete:
             raise ValueError(f"Gagal menghapus database: {e}") from e
 
     @close_connection
-    def mysql(self) -> Tuple[str, Any]:
+    async def mysql(self) -> Tuple[str, AsyncConnection]:
         """
         Hapus database MySQL menggunakan DROP DATABASE IF EXISTS.
         Database sistem yang terdaftar di _PROTECTED_MYSQL_DBS tidak bisa dihapus.
@@ -521,7 +549,7 @@ class Delete:
         """
         conn = None
         if not self.port:
-            self.port = 3360
+            self.port = 3306
         try:
             # Cek proteksi sebelum melakukan apapun ke server
             if self.db_name in _PROTECTED_MYSQL_DBS:
@@ -529,18 +557,21 @@ class Delete:
                     f"Database '{self.db_name}' adalah sistem database dan tidak boleh dihapus."
                 )
 
-            url = _build_url("mysql+pymysql", self.host, self.user, self.password, self.port)
-            engine = create_engine(url)
-            conn = engine.connect()
-            conn.execute(text(f"DROP DATABASE IF EXISTS {self.db_name}"))
+            url = await _build_url("mysql+asyncmy", self.host, self.user, self.password, self.port)
+            engine = create_async_engine(
+                url,
+                echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
+                pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            )
+            conn = await engine.connect()
+            await conn.execute(text(f"DROP DATABASE IF EXISTS {self.db_name}"))
             return f"Database MySQL '{self.db_name}' berhasil dihapus.", conn
-        except ValueError:
-            raise  # Re-raise ValueError (proteksi) tanpa membungkusnya lagi
         except Exception as e:
             raise ValueError(f"Gagal menghapus database: {e}") from e
 
     @close_connection
-    def postgresql(self) -> Tuple[str, Any]:
+    async def postgresql(self) -> Tuple[str, AsyncConnection]:
         """
         Hapus database PostgreSQL.
         Menggunakan WITH (FORCE) untuk memutus koneksi aktif sebelum drop (PostgreSQL 13+).
@@ -573,14 +604,18 @@ class Delete:
                 )
 
             # AUTOCOMMIT diperlukan karena DROP DATABASE tidak bisa dalam transaksi
-            url = _build_url("postgresql+psycopg2", self.host, self.user, self.password, self.port, "postgres")
-            engine = create_engine(url, isolation_level="AUTOCOMMIT")
-            conn = engine.connect()
+            url = await _build_url("postgresql+asyncpg", self.host, self.user, self.password, self.port, "postgres")
+            engine = create_async_engine(
+                url, 
+                isolation_level="AUTOCOMMIT",
+                echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
+                pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            )
+            conn = await engine.connect()
             # WITH (FORCE): putus paksa koneksi aktif ke DB ini sebelum drop (PG 13+)
-            conn.execute(text(f"DROP DATABASE IF EXISTS {self.db_name} WITH (FORCE)"))
+            await conn.execute(text(f"DROP DATABASE IF EXISTS {self.db_name} WITH (FORCE)"))
             return f"Database PostgreSQL '{self.db_name}' berhasil dihapus.", conn
-        except ValueError:
-            raise  # Re-raise ValueError (proteksi) tanpa membungkusnya lagi
         except Exception as e:
             raise ValueError(f"Gagal menghapus database: {e}") from e
 
@@ -591,65 +626,69 @@ class Delete:
 """
 if __name__ == "__main__":
     from typing import Dict
+    import asyncio
 
-    # ── SQLite (tidak perlu server) ───────────────
-    print("=== SQLite ===")
+    async def main():
+        # ── SQLite (tidak perlu server) ───────────────
+        print("=== SQLite ===")
 
-    # Buat database
-    creator = Create(db_name="toko")
-    print(creator.sqlite())
-    # Output: "Database SQLite 'toko.db' berhasil dibuat/dihubungkan."
+        # Buat database
+        creator = Create(db_name="toko")
+        print(await creator.sqlite())
+        # Output: "Database SQLite 'toko.db' berhasil dibuat/dihubungkan."
 
-    # Tampilkan daftar file .db di folder saat ini
-    show = Show()
-    jumlah, daftar = show.sqlite(search_dir=".")
-    print(f"Ditemukan {jumlah} file SQLite:")
-    for nama, path, ukuran in daftar:
-        print(f"  {nama} | {path} | {ukuran} bytes")
+        # Tampilkan daftar file .db di folder saat ini
+        show = Show()
+        jumlah, daftar = await show.sqlite(".")
+        print(f"Ditemukan {jumlah} file SQLite:")
+        for nama, path, ukuran in daftar:
+            print(f"  {nama} | {path} | {ukuran} bytes")
 
-    # Hapus database
-    print(Delete(db_name="toko").sqlite())
-    # Output: "Database SQLite (File: 'toko') berhasil dihapus."
+        # Hapus database
+        print(await Delete(db_name="toko").sqlite())
+        # Output: "Database SQLite (File: 'toko') berhasil dihapus."
 
-    # ── MySQL ─────────────────────────────────────
-    print("\n=== MySQL ===")
+        # ── MySQL ─────────────────────────────────────
+        print("\n=== MySQL ===")
 
-    MYSQL_CFG: Dict[str, Any] = dict(user="root", password="rahasia", host="localhost", port=3306)
+        MYSQL_CFG: Dict[str, Any] = dict(user="nadhif", password="thoriqi", host="localhost", port=3306)
 
-    print(Create(db_name="toko_db", **MYSQL_CFG).mysql())
-    # Output: "Database MySQL 'toko_db' berhasil dibuat."
+        print(await Create(db_name="test_toko_db", **MYSQL_CFG).mysql())
+        # Output: "Database MySQL 'test_toko_db' berhasil dibuat."
 
-    jumlah, daftar = Show(**MYSQL_CFG).mysql()
-    print(f"Total database MySQL: {jumlah}")
-    print("Daftar:", daftar)
+        jumlah, daftar = await Show(**MYSQL_CFG).mysql()
+        print(f"Total database MySQL: {jumlah}")
+        print("Daftar:", daftar)
 
-    print(Delete(db_name="toko_db", **MYSQL_CFG).mysql())
-    # Output: "Database MySQL 'toko_db' berhasil dihapus."
+        print(await Delete(db_name="test_toko_db", **MYSQL_CFG).mysql())
+        # Output: "Database MySQL 'test_toko_db' berhasil dihapus."
 
-    # ── PostgreSQL ────────────────────────────────
-    print("\n=== PostgreSQL ===")
+        # ── PostgreSQL ────────────────────────────────
+        print("\n=== PostgreSQL ===")
 
-    PG_CFG: Dict[str, Any] = dict(user="postgres", password="rahasia", host="localhost", port=5432)
+        PG_CFG: Dict[str, Any] = dict(user="postgres", password="rahasia", host="localhost", port=5432)
 
-    print(Create(db_name="toko_db", **PG_CFG).postgresql())
-    # Output: "Database PostgreSQL 'toko_db' berhasil dibuat."
+        print(Create(db_name="test_toko_db", **PG_CFG).postgresql())
+        # Output: "Database PostgreSQL 'test_toko_db' berhasil dibuat."
 
-    jumlah, daftar = Show(**PG_CFG).postgresql()
-    print(f"Total database PostgreSQL: {jumlah}")
-    print("Daftar:", daftar)
+        jumlah, daftar = Show(**PG_CFG).postgresql()
+        print(f"Total database PostgreSQL: {jumlah}")
+        print("Daftar:", daftar)
 
-    print(Delete(db_name="toko_db", **PG_CFG).postgresql())
-    # Output: "Database PostgreSQL 'toko_db' berhasil dihapus."
+        print(Delete(db_name="test_toko_db", **PG_CFG).postgresql())
+        # Output: "Database PostgreSQL 'test_toko_db' berhasil dihapus."
 
-    # ── Contoh validasi nama ──────────────────────
-    print("\n=== Validasi ===")
-    try:
-        validate_db_name("toko-db")  # ❌ ada tanda -
-    except ValueError as e:
-        print(f"Validasi gagal: {e}")
+        # ── Contoh validasi nama ──────────────────────
+        print("\n=== Validasi ===")
+        try:
+            validate_db_name("toko-db")  # ❌ ada tanda -
+        except ValueError as e:
+            print(f"Validasi gagal: {e}")
 
-    try:
-        Delete(db_name="mysql", **MYSQL_CFG).mysql()  # ❌ database sistem
-    except ValueError as e:
-        print(f"Proteksi aktif: {e}")
+        try:
+            await Delete(db_name="mysql", **MYSQL_CFG).mysql()  # ❌ database sistem
+        except ValueError as e:
+            print(f"Proteksi aktif: {e}")
+
+    asyncio.run(main())
 """

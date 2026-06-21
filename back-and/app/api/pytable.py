@@ -19,12 +19,13 @@ Endpoint:
     DELETE /table/drop
 """
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 
-from ..services import pytable as pt, auth
+from ..core.enums import Indeks
+from ..services import pydatabase as pd, pytable as pt, auth
 
 router = APIRouter(prefix="/table", tags=["Table Operations"])
 
@@ -33,7 +34,7 @@ router = APIRouter(prefix="/table", tags=["Table Operations"])
 # HELPER: Buat engine dari config request
 # ──────────────────────────────────────────────
 
-def _get_engine(
+async def _get_engine(
     db_type: str,
     db_name: str,
     host: Optional[str],
@@ -51,11 +52,11 @@ def _get_engine(
     )
     db_type_lower = db_type.lower()
     if db_type_lower == "sqlite":
-        return ge.sqlite()
+        return await ge.sqlite()
     elif db_type_lower == "mysql":
-        return ge.mysql()
+        return await ge.mysql()
     elif db_type_lower == "postgresql":
-        return ge.postgresql()
+        return await ge.postgresql()
     else:
         raise ValueError(
             f"db_type tidak dikenal: '{db_type}'. Pilih: sqlite | mysql | postgresql"
@@ -114,6 +115,20 @@ class EngineConfig(BaseModel):
     host: Optional[str] = Field(default="localhost", description="Host server (MySQL/PgSQL)")
     port: Optional[int] = Field(default=None, description="Port server (MySQL/PgSQL)")
 
+    @field_validator("port", mode="after")  # 1. Menggunakan string "port"
+    def validate_port(cls, value: Optional[int], info: ValidationInfo) -> Optional[int]:
+        # 2. Mengambil db_type dari objek info.data
+        db_type = info.data.get("db_type")
+        
+        # Jika port tidak diisi (None), berikan port default berdasarkan db_type
+        if value is None:
+            if db_type == "mysql":
+                return 3306
+            elif db_type == "postgresql":
+                return 5432
+                
+        return value  # Jangan lupa kembalikan nilainya kembali
+
 
 # ──────────────────────────────────────────────
 # RESPONSE MODELS
@@ -129,12 +144,12 @@ class ListTablesResponse(BaseModel):
 
 
 class TableStructureResponse(BaseModel):
-    table_name: str
+    table_name: str = Depends(pd.validate_db_name)
     columns: List[Dict[str, Any]]
 
 
 class TableContentResponse(BaseModel):
-    table_name: str
+    table_name: str = Depends(pd.validate_db_name)
     limit: int
     rows: List[Dict[str, Any]]
 
@@ -148,8 +163,17 @@ class ListTablesRequest(EngineConfig):
 
 
 class InspectStructureRequest(EngineConfig):
-    table_name: str = Field(..., description="Nama tabel yang ingin di-inspect")
+    table_name: str = Field(
+        ..., 
+        description="Nama tabel yang ingin di-inspect"
+    )
 
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+        # Panggil fungsi validasi Anda di sini
+        # Contoh sederhana: pastikan tidak mengandung karakter aneh
+        return pd.validate_db_name(value)
+    
 
 class ViewContentRequest(EngineConfig):
     table_name: str = Field(..., description="Nama tabel")
@@ -158,23 +182,46 @@ class ViewContentRequest(EngineConfig):
         description="Jumlah baris maksimum yang diambil (1–1000, default: 10)",
     )
 
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+        # Panggil fungsi validasi Anda di sini
+        # Contoh sederhana: pastikan tidak mengandung karakter aneh
+        return pd.validate_db_name(value)
 
+
+# BUAT SUB-MODEL BARU UNTUK STRUKTUR KOLOM
+class ColumnDefinition(BaseModel):
+    type: str = Field(
+        ..., 
+        description="Tipe data SQL, contoh: VARCHAR(100), INTEGER, FLOAT"
+    )
+    index: Indeks = Field(
+        default=Indeks.NONE, 
+        description="Tipe indeks untuk kolom ini"
+    )
+
+
+# UTAMA: Model Request Pembuatan Tabel
 class CreateTableRequest(EngineConfig):
     table_name: str = Field(..., description="Nama tabel baru yang akan dibuat")
-    columns_def: Dict[str, str] = Field(
+    
+    # Gunakan ColumnDefinition sebagai tipe value di dalam Dictionary
+    columns_def: Dict[str, ColumnDefinition] = Field(
         ...,
-        description=(
-            "Definisi kolom: {nama_kolom: tipe_sql}. "
-            "Kolom bernama 'id' otomatis dijadikan Primary Key."
-        ),
+        description="Definisi kolom: {nama_kolom: {type: tipe_sql, index: jenis_indeks}}.",
         examples=[{
-            "id": "INTEGER",
-            "nama": "VARCHAR(100)",
-            "harga": "FLOAT",
-            "stok": "INTEGER",
-            "is_aktif": "BOOLEAN",
-        },]
+            "id": {"type": "INTEGER", "index": "primary"},
+            "nama": {"type": "VARCHAR(100)", "index": ""},
+            "harga": {"type": "FLOAT", "index": ""},
+            "stok": {"type": "INTEGER", "index": ""},
+            "is_aktif": {"type": "BOOLEAN", "index": ""},
+        }]
     )
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+    # Panggil fungsi validasi Anda di sini
+    # Contoh sederhana: pastikan tidak mengandung karakter aneh    
+        return pd.validate_db_name(value)
 
 
 class AddColumnRequest(EngineConfig):
@@ -185,6 +232,12 @@ class AddColumnRequest(EngineConfig):
         description="Tipe SQL kolom mentah, contoh: 'TEXT', 'VARCHAR(50)', 'INTEGER'",
     )
 
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+    # Panggil fungsi validasi Anda di sini
+    # Contoh sederhana: pastikan tidak mengandung karakter aneh    
+        return pd.validate_db_name(value)
+
 
 class InsertDataRequest(EngineConfig):
     table_name: str = Field(..., description="Nama tabel tujuan")
@@ -193,6 +246,12 @@ class InsertDataRequest(EngineConfig):
         description="Data yang akan diinsert: {nama_kolom: nilai}",
         examples=[{"nama": "Laptop ASUS", "harga": 12500000.0, "stok": 15, "is_aktif": True},]
     )
+
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+    # Panggil fungsi validasi Anda di sini
+    # Contoh sederhana: pastikan tidak mengandung karakter aneh    
+        return pd.validate_db_name(value)
 
 
 class UpdateDataRequest(EngineConfig):
@@ -210,6 +269,11 @@ class UpdateDataRequest(EngineConfig):
         ...,
         description="Nilai untuk placeholder, contoh: {\"target_id\": 1}",
     )
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+    # Panggil fungsi validasi Anda di sini
+    # Contoh sederhana: pastikan tidak mengandung karakter aneh    
+        return pd.validate_db_name(value)
 
 
 class DeleteRowRequest(EngineConfig):
@@ -222,14 +286,31 @@ class DeleteRowRequest(EngineConfig):
         ...,
         description="Nilai untuk placeholder, contoh: {\"target_id\": 3}",
     )
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+    # Panggil fungsi validasi Anda di sini
+    # Contoh sederhana: pastikan tidak mengandung karakter aneh    
+        return pd.validate_db_name(value)
 
 
 class ClearTableRequest(EngineConfig):
     table_name: str = Field(..., description="Nama tabel yang akan dikosongkan datanya")
 
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+    # Panggil fungsi validasi Anda di sini
+    # Contoh sederhana: pastikan tidak mengandung karakter aneh    
+        return pd.validate_db_name(value)
+
 
 class DropTableRequest(EngineConfig):
     table_name: str = Field(..., description="Nama tabel yang akan dihapus secara permanen")
+
+    @field_validator("table_name")
+    def validate_table_name(cls, value: str) -> str:
+    # Panggil fungsi validasi Anda di sini
+    # Contoh sederhana: pastikan tidak mengandung karakter aneh    
+        return pd.validate_db_name(value)
 
 
 # ──────────────────────────────────────────────
@@ -242,15 +323,15 @@ class DropTableRequest(EngineConfig):
     summary="Daftar semua tabel",
     description="Mengambil semua nama tabel yang ada di database.",
 )
-def list_tables(body: ListTablesRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> ListTablesResponse:
+async def list_tables(body: ListTablesRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> ListTablesResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        tables = pt.list_tables(engine)
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        tables = await pt.list_tables(engine)
         return ListTablesResponse(total=len(tables), tables=tables)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
 
 
 @router.post(
@@ -259,19 +340,19 @@ def list_tables(body: ListTablesRequest, payload: Dict[str, Any] = Depends(auth.
     summary="Lihat struktur kolom tabel",
     description="Menampilkan detail kolom: nama, tipe, primary key, nullable, default, dll.",
 )
-def inspect_structure(body: InspectStructureRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> TableStructureResponse:
+async def inspect_structure(body: InspectStructureRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> TableStructureResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        raw_columns = pt.inspect_table_structure(engine, body.table_name)
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        raw_columns = await pt.inspect_table_structure(engine, body.table_name)
         columns:List[Dict[str, Any]] = [
             {**col, "type": str(col["type"])}
             for col in raw_columns
         ]
         return TableStructureResponse(table_name=body.table_name, columns=columns)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
 
 
 @router.post(
@@ -280,15 +361,15 @@ def inspect_structure(body: InspectStructureRequest, payload: Dict[str, Any] = D
     summary="Lihat isi data tabel",
     description="Mengambil baris data dari tabel dengan batas jumlah yang bisa dikonfigurasi.",
 )
-def view_content(body: ViewContentRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> TableContentResponse:
+async def view_content(body: ViewContentRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> TableContentResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        rows = pt.view_table_content(engine, body.table_name, limit=body.limit)
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        rows = await pt.view_table_content(engine, body.table_name, limit=body.limit)
         return TableContentResponse(table_name=body.table_name, limit=body.limit, rows=rows)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
 
 
 # ──────────────────────────────────────────────
@@ -304,18 +385,21 @@ def view_content(body: ViewContentRequest, payload: Dict[str, Any] = Depends(aut
         "Kolom bernama 'id' otomatis dijadikan Primary Key."
     ),
 )
-def create_table(body: CreateTableRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def create_table(body: CreateTableRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
         if not body.columns_def:
             raise ValueError("Minimal satu kolom harus didefinisikan")
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        columns_def = {
-            col_name: _resolve_column_type(type_str)
-            for col_name, type_str in body.columns_def.items()
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+
+        # Sekarang type_str[0] dijamin adalah Tipe SQL (str) dan type_str[1] adalah Indeks
+        columns_def: Dict[str, Tuple[Any, Any]] = {
+            col_name: (_resolve_column_type(col_data.type), col_data.index)
+            for col_name, col_data in body.columns_def.items()
         }
         
-        result = pt.create_dynamic_table(engine, body.table_name, columns_def)
+        result = await pt.create_dynamic_table(engine, body.table_name, columns_def)
         return MessageResponse(message=result)
+    
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -328,10 +412,10 @@ def create_table(body: CreateTableRequest, payload: Dict[str, Any] = Depends(aut
     summary="Tambah kolom baru ke tabel",
     description="Menambah kolom baru ke tabel yang sudah ada menggunakan ALTER TABLE.",
 )
-def add_column(body: AddColumnRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def add_column(body: AddColumnRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        result = pt.add_new_column(engine, body.table_name, body.column_name, body.column_type)
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        result = await pt.add_new_column(engine, body.table_name, body.column_name, body.column_type)
         return MessageResponse(message=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -349,10 +433,10 @@ def add_column(body: AddColumnRequest, payload: Dict[str, Any] = Depends(auth.ge
     summary="Insert satu baris data",
     description="Menambahkan satu baris data ke dalam tabel (parameterized query, aman dari SQL Injection).",
 )
-def insert_data(body: InsertDataRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def insert_data(body: InsertDataRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        result = pt.insert_dynamic_data(engine, body.table_name, body.data)
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        result = await pt.insert_dynamic_data(engine, body.table_name, body.data)
         return MessageResponse(message=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -370,10 +454,10 @@ def insert_data(body: InsertDataRequest, payload: Dict[str, Any] = Depends(auth.
         "Contoh: condition_str='id = :target_id', condition_params={\"target_id\": 1}."
     ),
 )
-def update_data(body: UpdateDataRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def update_data(body: UpdateDataRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        result = pt.update_table_data(
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        result = await pt.update_table_data(
             engine,
             body.table_name,
             body.update_values,
@@ -400,10 +484,10 @@ def update_data(body: UpdateDataRequest, payload: Dict[str, Any] = Depends(auth.
         "Contoh: condition_str='id = :target_id', condition_params={\"target_id\": 5}."
     ),
 )
-def delete_row(body: DeleteRowRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def delete_row(body: DeleteRowRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        result = pt.delete_one_row(
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        result = await pt.delete_one_row(
             engine, body.table_name, body.condition_str, body.condition_params
         )
         return MessageResponse(message=result)
@@ -422,10 +506,10 @@ def delete_row(body: DeleteRowRequest, payload: Dict[str, Any] = Depends(auth.ge
         "SQLite: DELETE FROM. MySQL/PostgreSQL: TRUNCATE TABLE."
     ),
 )
-def clear_table(body: ClearTableRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def clear_table(body: ClearTableRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        result = pt.clear_table_data(engine, body.table_name, db_type=body.db_type)
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        result = await pt.clear_table_data(engine, body.table_name, db_type=auth.TypeDB(body.db_type))
         return MessageResponse(message=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -439,10 +523,10 @@ def clear_table(body: ClearTableRequest, payload: Dict[str, Any] = Depends(auth.
     summary="Hapus tabel secara permanen",
     description="⚠️ Menghapus tabel beserta seluruh datanya secara permanen. Tidak dapat dibatalkan!",
 )
-def drop_table(body: DropTableRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def drop_table(body: DropTableRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
-        engine = _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
-        result = pt.drop_table(engine, body.table_name)
+        engine = await _get_engine(body.db_type, body.db_name, body.host, body.port, payload.get("sub"), payload.get("pw"))
+        result = await pt.drop_table(engine, body.table_name, auth.TypeDB(payload.get("db")))
         return MessageResponse(message=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

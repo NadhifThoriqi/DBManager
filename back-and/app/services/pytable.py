@@ -6,7 +6,7 @@ Modul utilitas untuk operasi database (SQLite, MySQL, PostgreSQL)
 menggunakan SQLModel + SQLAlchemy.
 
 Dependensi:
-    pip install sqlmodel pymysql psycopg2-binary
+    pip install sqlmodel aiosqlite asyncmy asyncpg  # pilih sesuai kebutuhan, jangan install semua kecuali diperlukan
 
 Struktur Modul:
     - Config          : Konfigurasi koneksi database
@@ -22,13 +22,15 @@ Struktur Modul:
     - drop_table              : Hapus tabel secara permanen
 """
 
-from typing import List, Optional, Any, Dict, Literal
-from sqlmodel import create_engine, SQLModel, Session, text
-from sqlalchemy import Engine, MetaData, Table, Column, inspect
+from typing import List, Optional, Any, Dict
+from sqlmodel import SQLModel, text
+from sqlalchemy import Connection, CursorResult, MetaData, Table, Column, inspect
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine, AsyncSession, async_sessionmaker
 
 # Import validator nama tabel/db dari modul lain dalam package ini
 from .pydatabase import validate_db_name
-
+from .auth import TypeDB
+from ..core.enums import Indeks
 
 # ──────────────────────────────────────────────
 # KONFIGURASI & ENGINE
@@ -67,10 +69,10 @@ class GetEngine:
     Contoh penggunaan:
     ------------------
     # SQLite
-    engine = GetEngine(db_name="data/toko.db").sqlite()
+    engine = await GetEngine(db_name="data/toko.db").sqlite()
 
     # MySQL
-    engine = GetEngine(
+    engine = await GetEngine(
         db_name="toko_db",
         host="localhost",
         port=3306,
@@ -79,7 +81,7 @@ class GetEngine:
     ).mysql()
 
     # PostgreSQL
-    engine = GetEngine(
+    engine = await GetEngine(
         db_name="toko_db",
         host="localhost",
         port=5432,
@@ -102,35 +104,39 @@ class GetEngine:
         self.password = password
         self.db_name = db_name
 
-    def sqlite(self) -> Engine:
+    async def sqlite(self) -> AsyncEngine:
         """
         Buat engine untuk SQLite.
         db_name = path ke file .db, contoh: 'data/toko.db' atau ':memory:'
         """
-        return create_engine(f"sqlite:///{self.db_name}")
+        return create_async_engine(
+            f"sqlite+aiosqlite:///{self.db_name}",
+        )
 
-    def mysql(self) -> Engine:
+    async def mysql(self) -> AsyncEngine:
         """
         Buat engine untuk MySQL / MariaDB.
-        Membutuhkan pymysql: pip install pymysql
+        Membutuhkan asyncmy: pip install asyncmy
         """
         if not self.port:
             self.port = 3306
-        return create_engine(
-            f"mysql+pymysql://{self.user}:{self.password}"
-            f"@{self.host}:{self.port}/{self.db_name}"
+        return create_async_engine(
+            f"mysql+asyncmy://{self.user}:{self.password}@{self.host}:{self.port}/{self.db_name}",
+            echo=False,           # Set True untuk melihat query SQL di terminal (opsional)
+            pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
+            pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
         )
 
-    def postgresql(self) -> Engine:
+    async def postgresql(self) -> AsyncEngine:
         """
         Buat engine untuk PostgreSQL.
-        Membutuhkan psycopg2: pip install psycopg2-binary
+        Membutuhkan psycopg2: pip install asyncpg
         """
         if not self.port:
             self.port = 5432
-        return create_engine(
-            f"postgresql://{self.user}:{self.password}"
-            f"@{self.host}:{self.port}/{self.db_name}"
+        return create_async_engine(
+            f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.db_name}",
+            pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
         )
 
 
@@ -138,7 +144,7 @@ class GetEngine:
 # INSPEKSI DATABASE
 # ──────────────────────────────────────────────
 
-def list_tables(engine: Engine) -> List[str]:
+async def list_tables(engine: AsyncEngine) -> List[str]:
     """
     Ambil daftar semua nama tabel yang ada di database.
 
@@ -159,11 +165,17 @@ def list_tables(engine: Engine) -> List[str]:
     print(tabel)
     # Output: ['produk', 'pelanggan', 'transaksi']
     """
-    inspector = inspect(engine)
-    return inspector.get_table_names()
+    def execute_update_sync(sync_conn: Connection):
+        inspector: Any = inspect(sync_conn)
+        return inspector.get_table_names()
+
+    async with engine.begin() as conn:
+        list_table = await conn.run_sync(execute_update_sync)
+
+    return list_table
 
 
-def inspect_table_structure(engine: Engine, table_name: str) -> List[Dict[str, Any]]:
+async def inspect_table_structure(engine: AsyncEngine, table_name: str) -> List[Dict[str, Any]]:
     """
     Ambil detail struktur kolom dari sebuah tabel (seperti DESCRIBE di MySQL).
 
@@ -195,34 +207,40 @@ def inspect_table_structure(engine: Engine, table_name: str) -> List[Dict[str, A
     # {'name': 'id', 'type': INTEGER(), 'pk': 'Y', 'nullable': False, ...}
     # {'name': 'nama', 'type': VARCHAR(length=100), 'pk': 'N', 'nullable': True, ...}
     """
-    inspector = inspect(engine)
+    def execute_structure_sync(sync_conn: Connection):
+        inspector: Any = inspect(sync_conn)
 
-    # 1. Ambil daftar kolom yang menjadi Primary Key pada tabel ini
-    # Mengembalikan dict seperti: {'constrained_columns': ['id'], 'name': 'pk_user'}
-    pk_constraint = inspector.get_pk_constraint(table_name)
-    pk_columns = pk_constraint.get("constrained_columns", [])
+        # 1. Ambil daftar kolom yang menjadi Primary Key pada tabel ini
+        # Mengembalikan dict seperti: {'constrained_columns': ['id'], 'name': 'pk_user'}    
+        pk_constraint = inspector.get_pk_constraint(table_name)
+        pk_columns = pk_constraint.get("constrained_columns", [])
 
-    columns_info = inspector.get_columns(table_name)
+        columns_info = inspector.get_columns(table_name)
 
-    result: List[Dict[str, Any]] = []
+        result: List[Dict[str, Any]] = []
 
-    for col in columns_info:
-        col_name = col["name"]
-        
-        result.append({
-            "name":          col["name"],
-            "type":          col["type"],
-            "primary_key":   "Y" if col_name in pk_columns else None,
-            "nullable":      col["nullable"],
-            "autoincrement": col.get("autoincrement"),
-            "default":       col["default"],
-            "comment":       col.get("comment"),
-        })
+        for col in columns_info:
+            col_name = col["name"]
+            
+            result.append({
+                "name":          col["name"],
+                "type":          col["type"],
+                "primary_key":   "Y" if col_name in pk_columns else None,
+                "nullable":      col["nullable"],
+                "autoincrement": col.get("autoincrement"),
+                "default":       col["default"],
+                "comment":       col.get("comment"),
+            })
+
+        return result
+    
+    async with engine.begin() as conn:
+        result = await conn.run_sync(execute_structure_sync)
 
     return result
 
 
-def view_table_content(engine: Engine, table_name: str, limit: int = 5) -> List[Dict[str, Any]]:
+async def view_table_content(engine: AsyncEngine, table_name: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
     Ambil isi data dari tabel dalam bentuk list of dict.
 
@@ -247,34 +265,36 @@ def view_table_content(engine: Engine, table_name: str, limit: int = 5) -> List[
     # {'id': 2, 'nama': 'Mouse', 'harga': 250000.0, 'stok': 50}
     # {'id': 3, 'nama': 'Keyboard', 'harga': 450000.0, 'stok': 30}
     """
-    inspector = inspect(engine)
-    columns = [col["name"] for col in inspector.get_columns(table_name)]
+    def execute_view_sync(sync_conn: Connection):
+        inspector: Any = inspect(sync_conn)
 
-    if not columns:
-        return []
+        return [col["name"] for col in inspector.get_columns(table_name)]
 
-    # Validasi nama tabel untuk mencegah SQL Injection
-    safe_table_name = validate_db_name(table_name)
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(execute_view_sync)
+        if not columns:
+            return []
 
-    with Session(engine) as session:
-        query = text(f"SELECT * FROM {safe_table_name} LIMIT :limit")
-        rows = session.connection().execute(query, {"limit": limit}).fetchall()
+    async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False) 
+    async with async_session_maker() as session:
+        query = text(f"SELECT * FROM {table_name} LIMIT :limit")
+        result = await session.execute(query, {"limit": limit})
+
+        # Di SQLAlchemy async, gunakan .mappings().all() untuk langsung mendapatkan format dict
+        rows = result.mappings().all()
 
         if not rows:
             return []
 
         # Konversi setiap row (tuple) menjadi dict {nama_kolom: nilai}
-        return [
-            {columns[i]: row[i] for i in range(len(columns))}
-            for row in rows
-        ]
+        return [dict(row) for row in rows]
 
 
 # ──────────────────────────────────────────────
 # OPERASI DDL (Struktur Tabel)
 # ──────────────────────────────────────────────
 
-def create_dynamic_table(engine: Engine, table_name: str, columns_def: Dict[str, Any]) -> str:
+async def create_dynamic_table(engine: AsyncEngine, table_name: str, columns_def: Dict[str, Any]) -> str:
     """
     Buat tabel baru secara dinamis berdasarkan definisi kolom.
 
@@ -313,19 +333,47 @@ def create_dynamic_table(engine: Engine, table_name: str, columns_def: Dict[str,
     safe_name = validate_db_name(table_name)
 
     columns: List[Column[Any]] = []
-    for col_name, col_type in columns_def.items():
-        # Kolom 'id' otomatis menjadi Primary Key
-        is_pk = col_name.lower() == "id"
-        columns.append(Column(col_name, col_type, primary_key=is_pk))
+    for col_name, (col_type, col_index) in columns_def.items():
+        # Inisialisasi status default sebagai boolean biasa
+        is_pk = False
+        is_idx = False
+        is_uniq = False
+        
+        # Tentukan kondisi berdasarkan input
+        if col_name.lower() == "id" or col_index == Indeks.PRIMARY:
+            is_pk = True
+        elif col_index == Indeks.UNIQUE:
+            is_uniq = True
+        elif col_index == Indeks.INDEX:
+            is_idx = True
+        elif col_index in (Indeks.FULLTEXT, Indeks.SPATIAL):
+            is_idx = True 
+
+        # Terjemahkan langsung secara eksplisit di sini. 
+        # Pylance tidak akan bingung karena posisinya jelas.
+        columns.append(
+            Column(
+                col_name, 
+                col_type, 
+                primary_key=is_pk, 
+                index=is_idx, 
+                unique=is_uniq
+            )
+        )
 
     # Daftarkan tabel ke metadata lalu buat di database fisik
     Table(safe_name, metadata, *columns)
-    metadata.create_all(engine)
+
+    async with engine.begin() as conn:
+        def create_tables(sync_conn: Connection):
+            metadata.create_all(bind=sync_conn)
+
+        await conn.run_sync(create_tables)
 
     return f"Sukses: Tabel '{safe_name}' berhasil dibuat!"
 
 
-def add_new_column(engine: Engine, table_name: str, column_name: str, column_type: str) -> str:
+async def add_new_column(engine: AsyncEngine, table_name: str, column_name: str, column_type: str) -> str:
     """
     Tambah kolom baru ke tabel yang sudah ada (ALTER TABLE).
 
@@ -350,18 +398,19 @@ def add_new_column(engine: Engine, table_name: str, column_name: str, column_typ
     add_new_column(engine, "produk", "kategori", "VARCHAR(50)")
     # Output: Sukses: Kolom 'kategori' (VARCHAR(50)) berhasil ditambahkan ke tabel 'produk'.
     """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
+    def create_tables(sync_conn: Connection) -> bool:
+        metadata = MetaData()
+        metadata.reflect(bind=sync_conn, only=[table_name])
+        return table_name in metadata.tables
+    
+    async with engine.begin() as conn:
+        table_exists = await conn.run_sync(create_tables)
 
-    if table_name not in metadata.tables:
-        raise ValueError(f"Tabel '{table_name}' tidak ditemukan.")
-
-    # DDL ALTER TABLE - aman selama input berasal dari sistem internal
-    query = text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
-
-    with Session(engine) as session:
-        session.connection().execute(query)
-        session.commit()
+        if not table_exists:
+            raise ValueError(f"Tabel '{table_name}' tidak dapat ditemukan.")
+        
+        query = text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+        await conn.execute(query)
 
     return (
         f"Sukses: Kolom '{column_name}' ({column_type}) "
@@ -373,7 +422,7 @@ def add_new_column(engine: Engine, table_name: str, column_name: str, column_typ
 # OPERASI DML (Isi Data)
 # ──────────────────────────────────────────────
 
-def insert_dynamic_data(engine: Engine, table_name: str, data: Dict[str, Any]) -> str:
+async def insert_dynamic_data(engine: AsyncEngine, table_name: str, data: Dict[str, Any]) -> str:
     """
     Tambahkan SATU baris data ke dalam tabel secara aman (anti SQL Injection).
 
@@ -408,24 +457,32 @@ def insert_dynamic_data(engine: Engine, table_name: str, data: Dict[str, Any]) -
     )
     # Output: "Sukses: Data berhasil ditambahkan ke tabel 'produk'."
     """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
+    def execute_insert_async(sync_conn: Connection):
+        metadata = MetaData()
+        metadata.reflect(bind=sync_conn, only=[table_name])
 
-    if table_name not in metadata.tables:
-        raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
+        if table_name not in metadata.tables:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
 
-    target_table = metadata.tables[table_name]
+        target_table = metadata.tables[table_name]
 
-    with Session(engine) as session:
+        valid_columns = {col.name for col in target_table.columns}
+        filter_data = {k: v for k, v in data.items() if k in valid_columns}
+
+        if not filter_data:
+            raise ValueError("Tidak ada kolom ynag cocok untuk dimasukkan ke dalam tabel")
+            
         # insert().values() aman dari SQL Injection karena menggunakan parameterized query
-        query = target_table.insert().values(**data)
-        session.connection().execute(query)
-        session.commit()
+        query = target_table.insert().values(**filter_data)
+        sync_conn.execute(query)
 
+    async with engine.begin() as conn:
+        await conn.run_sync(execute_insert_async)
+        
     return f"Sukses: Data berhasil ditambahkan ke tabel '{table_name}'."
 
 
-def update_table_data(engine: Engine, table_name: str, update_values: Dict[str, Any], condition_str: str, condition_params: Dict[str, Any]) -> str:
+async def update_table_data(engine: AsyncEngine, table_name: str, update_values: Dict[str, Any], condition_str: str, condition_params: Dict[str, Any]) -> str:
     """
     Perbarui isi data di tabel secara dinamis dengan kondisi WHERE.
 
@@ -464,37 +521,40 @@ def update_table_data(engine: Engine, table_name: str, update_values: Dict[str, 
         condition_params= {"stok_habis": 0}
     )
     """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
+    def execute_update_async(sync_conn: Connection):
+        metadata = MetaData()
+        metadata.reflect(bind=sync_conn, only=[table_name])
 
-    if table_name not in metadata.tables:
-        raise ValueError(f"Tabel '{table_name}' tidak ditemukan.")
+        if table_name not in metadata.tables:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan.")
 
-    # Susun klausa SET: "stok = :stok, harga = :harga"
-    set_clauses = [f"{col} = :{col}" for col in update_values.keys()]
-    set_str = ", ".join(set_clauses)
+        target_table = metadata.tables[table_name]
 
-    raw_query = f"UPDATE {table_name} SET {set_str} WHERE {condition_str}"
-    query = text(raw_query)
+        valid_columns = {col.name for col in target_table.columns}
+        filtered_updates = {k : v for k, v in update_values.items() if k in valid_columns}
 
-    # Gabungkan semua parameter: data update + parameter kondisi WHERE
-    bind_params = {**update_values, **condition_params}
+        if not filtered_updates:
+            raise ValueError("Tidak ada kolom yang diberikan untuk diperbarui.")
 
-    with Session(engine) as session:
-        result = session.connection().execute(query, bind_params)
-        session.commit()
+        query = target_table.update().where(text(condition_str)).values(**filtered_updates)
+
+        result: CursorResult[Any] = sync_conn.execute(query, condition_params)
+
+        return result.rowcount
+
+    async with engine.begin() as conn:
+        row_count = await conn.run_sync(execute_update_async)
 
     return (
-        f"Sukses: {result.rowcount} baris data pada tabel "
+        f"Sukses: {row_count} baris data pada tabel "
         f"'{table_name}' berhasil diperbarui."
     )
-
 
 # ──────────────────────────────────────────────
 # OPERASI HAPUS DATA / TABEL
 # ──────────────────────────────────────────────
 
-def delete_one_row(engine: Engine, table_name: str, condition_str: str, condition_params: Dict[str, Any]) -> str:
+async def delete_one_row(engine: AsyncEngine, table_name: str, condition_str: str, condition_params: Dict[str, Any]) -> str:
     """
     Hapus SATU baris data dari tabel berdasarkan kondisi WHERE.
 
@@ -543,34 +603,36 @@ def delete_one_row(engine: Engine, table_name: str, condition_str: str, conditio
     )
     # Output: "Sukses: 1 baris data dengan kondisi 'nama = :target_nama' berhasil dihapus dari tabel 'produk'."
     """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
+    def execute_delete_one_sync(sync_conn: Connection):
+        metadata = MetaData()
+        metadata.reflect(bind=sync_conn, only=[table_name])
 
-    if table_name not in metadata.tables:
-        raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
+        if table_name not in metadata.tables:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
 
-    safe_table_name = validate_db_name(table_name)
+        target_table = metadata.tables[table_name]
 
-    raw_query = f"DELETE FROM {safe_table_name} WHERE {condition_str}"
-    query = text(raw_query)
+        query = target_table.delete().where(text(condition_str))
+        
+        result: CursorResult[Any] = sync_conn.execute(query, condition_params)
+        return result.rowcount
 
-    with Session(engine) as session:
-        result = session.connection().execute(query, condition_params)
-        session.commit()
+    async with engine.begin() as conn:
+        rowcount = await conn.run_sync(execute_delete_one_sync)
 
-    if result.rowcount == 0:
-        raise ValueError(
-            f"Tidak ada data yang cocok dengan kondisi '{condition_str}' "
-            f"di tabel '{table_name}'. Tidak ada baris yang dihapus."
-        )
+        if rowcount == 0:
+            raise ValueError(
+                f"Tidak ada data yang cocok dengan kondisi '{condition_str}' "
+                f"di tabel '{table_name}'. Tidak ada baris yang dihapus."
+            )
 
     return (
-        f"Sukses: {result.rowcount} baris data dengan kondisi '{condition_str}' "
+        f"Sukses: {rowcount} baris data dengan kondisi '{condition_str}' "
         f"berhasil dihapus dari tabel '{table_name}'."
     )
 
 
-def clear_table_data(engine: Engine, table_name: str, db_type: Literal["sqlite", "mysql", "postgresql"]) -> str:
+async def clear_table_data(engine: AsyncEngine, table_name: str, db_type: TypeDB) -> str:
     """
     Kosongkan semua isi data di tabel TANPA menghapus struktur tabelnya.
 
@@ -600,36 +662,38 @@ def clear_table_data(engine: Engine, table_name: str, db_type: Literal["sqlite",
     engine_mysql = GetEngine("toko_db", port=3306, password="secret").mysql()
     clear_table_data(engine_mysql, "produk", db_type="mysql")
     """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
+    def execute_clear_table_async(sync_conn: Connection):
+        metadata = MetaData()
+        metadata.reflect(bind=sync_conn, only=[table_name])
 
-    if table_name not in metadata.tables:
-        raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
+        if table_name not in metadata.tables:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
 
-    with Session(engine) as session:
-        conn = session.connection()
+        dialect = conn.dialect
+        safe_table_name = dialect.identifier_preparer.quote(table_name)
 
         if db_type.lower() == "sqlite":
             # SQLite tidak support TRUNCATE, gunakan DELETE FROM
-            conn.execute(text(f"DELETE FROM {table_name}"))
+            sync_conn.execute(text(f"DELETE FROM {safe_table_name}"))
             try:
                 # Reset counter autoincrement (jika ada)
-                conn.execute(
+                sync_conn.execute(
                     text("DELETE FROM sqlite_sequence WHERE name = :tbl"),
-                    {"tbl": table_name}
+                    {"tbl": safe_table_name}
                 )
             except Exception:
                 pass  # Abaikan jika tabel tidak pakai AUTOINCREMENT
         else:
             # MySQL dan PostgreSQL: TRUNCATE jauh lebih efisien untuk data besar
-            conn.execute(text(f"TRUNCATE TABLE {table_name}"))
+            sync_conn.execute(text(f"TRUNCATE TABLE {safe_table_name}"))
 
-        session.commit()
+    async with engine.begin() as conn:
+        await conn.run_sync(execute_clear_table_async)
 
     return f"Sukses: Semua data di dalam tabel '{table_name}' berhasil dikosongkan."
 
 
-def drop_table(engine: Engine, table_name: str) -> str:
+async def drop_table(engine: AsyncEngine, table_name: str, db_type: TypeDB) -> str:
     """
     Hapus tabel secara PERMANEN dari database (DROP TABLE).
 
@@ -653,15 +717,32 @@ def drop_table(engine: Engine, table_name: str) -> str:
     print(pesan)
     # Output: "Sukses: Tabel 'produk_lama' berhasil dihapus secara permanen!"
     """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
+    def execute_drop_sync(sync_conn: Connection):
+        metadata = MetaData()
+        metadata.reflect(bind=sync_conn, only=[table_name])
 
-    if table_name not in metadata.tables:
-        raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
+        if table_name not in metadata.tables:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
 
-    # Ambil objek tabel dari metadata hasil refleksi, lalu drop
-    target_table = metadata.tables[table_name]
-    target_table.drop(bind=engine)
+        dialect = sync_conn.dialect
+        safe_table_name = dialect.identifier_preparer.quote(table_name)
+
+        # Kondisikan query berdasarkan jenis database
+        if db_type.lower() == "postgresql":
+            # Postgres wajib pakai CASCADE jika ada relasi agar tidak error
+            query_str = f"DROP TABLE {safe_table_name} CASCADE"
+        else:
+            # SQLite dan MySQL menggunakan perintah standar tanpa CASCADE
+            query_str = f"DROP TABLE {safe_table_name}"
+            
+        sync_conn.execute(text(query_str))
+        return True
+
+    async with engine.begin() as conn:
+        table_was_dropped = await conn.run_sync(execute_drop_sync)
+        
+        if not table_was_dropped:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
 
     return f"Sukses: Tabel '{table_name}' berhasil dihapus secara permanen!"
 

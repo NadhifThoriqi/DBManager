@@ -1,8 +1,9 @@
 from fastapi import Response, HTTPException, Cookie
-from typing import Any, Dict, Optional, cast, Union
+from typing import Any, Dict, Literal, Optional, cast, Union
 from datetime import timedelta, datetime, timezone
 from dotenv import load_dotenv
-
+from enum import StrEnum
+    
 from ..api import auth
 
 import jwt
@@ -15,6 +16,11 @@ if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY tidak ditemukan di environment variables!")
 
 ALGORITHM = "HS256"
+
+class TypeDB(StrEnum):
+    SQLITE="sqlite"
+    MYSQL="mysql"
+    POSTGRESQL="postgresql"
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """
@@ -66,7 +72,7 @@ def create_cookie(response: Response, body: Union[auth.SignUpRequest, auth.SignI
 
     return "Login berhasil"
 
-def get_cookie(access_token: Optional[str] = Cookie(None)):
+def get_cookie(access_token: Optional[str] = Cookie(None)) -> Dict[str, str | Literal['sqlite', 'mysql', 'postgresql']]:
     if not access_token:
         raise HTTPException(status_code=401, detail="Log in dulu yuk")
     try:
