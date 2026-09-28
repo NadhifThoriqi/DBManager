@@ -22,9 +22,10 @@ Struktur Modul:
     - Delete             : Kelas untuk menghapus database
 """
 
-from typing import Any, Callable, List, Tuple, Optional
 import os
 import re
+from pathlib import Path
+from typing import Any, Callable, List, Tuple, Optional
 
 try:
     from sqlalchemy import text
@@ -33,7 +34,7 @@ try:
 except ImportError:
     raise ImportError(
         "sqlalchemy belum terinstall. "
-        "Install dengan: pip install sqlalchemy asyncmy asyncpg-binary"
+        "Install dengan: pip install sqlalchemy"
     )
 
 
@@ -42,15 +43,19 @@ except ImportError:
 # ──────────────────────────────────────────────
 
 # Database bawaan MySQL yang tidak boleh dihapus
-_PROTECTED_MYSQL_DBS = {"information_schema", "mysql", "performance_schema", "sys"}
+_PROTECTED_MYSQL_DBS = {"information_schema", "mysql", "performance_schema", "sys", "phpmyadmin"}
 
 # Database bawaan PostgreSQL yang tidak boleh dihapus
 _PROTECTED_PG_DBS = {"postgres", "template0", "template1"}
 
 
 # ──────────────────────────────────────────────
-# FUNGSI UTILITAS
+# KONFIGURASI & ENGINE
 # ──────────────────────────────────────────────
+DIREKTORI: Path = Path(__file__).resolve().parents[3]
+DIREKTORI_DB: Path = DIREKTORI / "sql"
+DIREKTORI_DB.mkdir(parents=True, exist_ok=True)
+
 
 def validate_db_name(name: str) -> str:
     """
@@ -111,7 +116,9 @@ async def _build_url(dialect: str, host: str, user: str, password: str, port: Op
     """
     port_str = f":{port}" if port else ""
     db_str = f"/{database}" if database else ""
-    return f"{dialect}://{user}:{password}@{host}{port_str}{db_str}"
+    if password != "":
+        return f"{dialect}://{user}:{password}@{host}{port_str}{db_str}"
+    return f"{dialect}://{user}@{host}{port_str}{db_str}"
 
 
 def close_connection(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -135,8 +142,6 @@ def close_connection(func: Callable[..., Any]) -> Callable[..., Any]:
         try:
             result, conn = await func(*args, **kwargs)
             return result
-        except Exception:
-            raise  # Teruskan exception ke pemanggil
         finally:
             # Tutup koneksi apapun yang terjadi
             if conn and hasattr(conn, 'close'):
@@ -169,7 +174,7 @@ class Create:
     print(creator.postgresql())
     """
 
-    def __init__(self, db_name: str, user: Optional[str] = 'root', password: Optional[str] = '', host: Optional[str] = 'localhost', port: Optional[int] = None,) -> None:
+    def __init__(self, db_name: str, user: str = 'root', password: str = '', host: str = 'localhost', port: Optional[int] = None,) -> None:
         """
         Parameters
         ----------
@@ -179,9 +184,9 @@ class Create:
         host     : str          - alamat server (default: 'localhost')
         port     : Optional[int]- nomor port (MySQL: 3306, PostgreSQL: 5432)
         """
-        self.user = user or 'root'
-        self.password = password or ''
-        self.host = host or 'localhost'
+        self.user = user
+        self.password = password
+        self.host = host
         self.port = port
         self.db_name = validate_db_name(db_name)  # Validasi sebelum disimpan
 
@@ -202,7 +207,7 @@ class Create:
         """
         try:
             engine = create_async_engine(
-                f"sqlite+aiosqlite:///{self.db_name}.db",
+                f"sqlite+aiosqlite:///{DIREKTORI_DB}/{self.db_name}.db",
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
                 pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
@@ -314,7 +319,7 @@ class Show:
     jumlah, daftar = show.postgresql()
     """
 
-    def __init__(self, user: Optional[str] = 'root', password: Optional[str] = '', host: Optional[str] = 'localhost', port: Optional[int] = None,) -> None:
+    def __init__(self, user: str = 'root', password: str = '', host: str = 'localhost', port: Optional[int] = None,) -> None:
         """
         Parameters
         ----------
@@ -323,12 +328,12 @@ class Show:
         host     : str          - alamat server (default: 'localhost')
         port     : Optional[int]- MySQL: 3306 | PostgreSQL: 5432
         """
-        self.host = host or 'localhost'
-        self.user = user or 'root'
-        self.password = password or ''
+        self.host = host
+        self.user = user
+        self.password = password
         self.port = port
 
-    async def sqlite(self, search_dir: str = ".") -> Tuple[int, List[Any]]:
+    async def sqlite(self) -> Tuple[int, List[Any]]:
         """
         Temukan semua file SQLite (.db) dalam direktori yang ditentukan.
 
@@ -354,18 +359,9 @@ class Show:
         # ]
         """
         try:
-            db_files: List[str] = [
-                f for f in os.listdir(search_dir)
-                if f.endswith('.db') and os.path.isfile(os.path.join(search_dir, f))
-            ]
-            result: List[Tuple[str, str, int]] = [
-                (
-                    f,
-                    os.path.join(search_dir, f),
-                    os.path.getsize(os.path.join(search_dir, f))
-                )
-                for f in db_files
-            ]
+            if not DIREKTORI_DB.exists():
+                return (0, [])
+            result = [f.name.replace(".db", "") for f in DIREKTORI_DB.glob("*.db")]
             return (len(result), result)
         except Exception as e:
             raise ValueError(f"Error mencari file SQLite: {e}") from e
@@ -473,7 +469,7 @@ class Delete:
     Delete(db_name="toko_db", user="postgres", password="secret", port=5432).postgresql()
     """
 
-    def __init__(self, db_name: str, user: Optional[str] = 'root', password: Optional[str] = '', host: Optional[str] = 'localhost', port: Optional[int] = None) -> None:
+    def __init__(self, db_name: str, user: str = 'root', password: str = '', host: str = 'localhost', port: Optional[int] = None) -> None:
         """
         Parameters
         ----------
@@ -484,9 +480,9 @@ class Delete:
         port     : Optional[int]- MySQL: 3306 | PostgreSQL: 5432
         """
         self.db_name = db_name
-        self.host = host or 'localhost'
-        self.user = user or 'root'
-        self.password = password or ''
+        self.host = host
+        self.user = user
+        self.password = password
         self.port = port
 
     async def sqlite(self) -> str:
@@ -511,12 +507,12 @@ class Delete:
         # Output: "File database 'tidak_ada' tidak ditemukan."
         """
         try:
-            file_path = f"{self.db_name}"
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            db_file_path = f"{DIREKTORI_DB}/{self.db_name}.db"
+            if os.path.exists(db_file_path):
+                os.remove(db_file_path)
                 return f"Database SQLite (File: '{self.db_name}') berhasil dihapus."
             else:
-                return f"File database '{self.db_name}' tidak ditemukan."
+                return f"File database '{self.db_name}' tidak ditemukan di {DIREKTORI_DB}."
         except PermissionError as e:
             raise ValueError(
                 "Gagal menghapus! File sedang digunakan oleh program lain. "
@@ -618,77 +614,3 @@ class Delete:
             return f"Database PostgreSQL '{self.db_name}' berhasil dihapus.", conn
         except Exception as e:
             raise ValueError(f"Gagal menghapus database: {e}") from e
-
-
-# ──────────────────────────────────────────────
-# CONTOH PENGGUNAAN LENGKAP
-# ──────────────────────────────────────────────
-"""
-if __name__ == "__main__":
-    from typing import Dict
-    import asyncio
-
-    async def main():
-        # ── SQLite (tidak perlu server) ───────────────
-        print("=== SQLite ===")
-
-        # Buat database
-        creator = Create(db_name="toko")
-        print(await creator.sqlite())
-        # Output: "Database SQLite 'toko.db' berhasil dibuat/dihubungkan."
-
-        # Tampilkan daftar file .db di folder saat ini
-        show = Show()
-        jumlah, daftar = await show.sqlite(".")
-        print(f"Ditemukan {jumlah} file SQLite:")
-        for nama, path, ukuran in daftar:
-            print(f"  {nama} | {path} | {ukuran} bytes")
-
-        # Hapus database
-        print(await Delete(db_name="toko").sqlite())
-        # Output: "Database SQLite (File: 'toko') berhasil dihapus."
-
-        # ── MySQL ─────────────────────────────────────
-        print("\n=== MySQL ===")
-
-        MYSQL_CFG: Dict[str, Any] = dict(user="nadhif", password="thoriqi", host="localhost", port=3306)
-
-        print(await Create(db_name="test_toko_db", **MYSQL_CFG).mysql())
-        # Output: "Database MySQL 'test_toko_db' berhasil dibuat."
-
-        jumlah, daftar = await Show(**MYSQL_CFG).mysql()
-        print(f"Total database MySQL: {jumlah}")
-        print("Daftar:", daftar)
-
-        print(await Delete(db_name="test_toko_db", **MYSQL_CFG).mysql())
-        # Output: "Database MySQL 'test_toko_db' berhasil dihapus."
-
-        # ── PostgreSQL ────────────────────────────────
-        print("\n=== PostgreSQL ===")
-
-        PG_CFG: Dict[str, Any] = dict(user="postgres", password="rahasia", host="localhost", port=5432)
-
-        print(Create(db_name="test_toko_db", **PG_CFG).postgresql())
-        # Output: "Database PostgreSQL 'test_toko_db' berhasil dibuat."
-
-        jumlah, daftar = Show(**PG_CFG).postgresql()
-        print(f"Total database PostgreSQL: {jumlah}")
-        print("Daftar:", daftar)
-
-        print(Delete(db_name="test_toko_db", **PG_CFG).postgresql())
-        # Output: "Database PostgreSQL 'test_toko_db' berhasil dihapus."
-
-        # ── Contoh validasi nama ──────────────────────
-        print("\n=== Validasi ===")
-        try:
-            validate_db_name("toko-db")  # ❌ ada tanda -
-        except ValueError as e:
-            print(f"Validasi gagal: {e}")
-
-        try:
-            await Delete(db_name="mysql", **MYSQL_CFG).mysql()  # ❌ database sistem
-        except ValueError as e:
-            print(f"Proteksi aktif: {e}")
-
-    asyncio.run(main())
-"""

@@ -1,10 +1,9 @@
 from fastapi import Response, HTTPException, Cookie
-from typing import Any, Dict, Literal, Optional, cast, Union
+from typing import Any, Dict, Literal, Optional, cast
 from datetime import timedelta, datetime, timezone
 from dotenv import load_dotenv
-from enum import StrEnum
-    
-from ..api import auth
+
+from ..schemas.auth import SignInRequest
 
 import jwt
 import os
@@ -16,11 +15,6 @@ if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY tidak ditemukan di environment variables!")
 
 ALGORITHM = "HS256"
-
-class TypeDB(StrEnum):
-    SQLITE="sqlite"
-    MYSQL="mysql"
-    POSTGRESQL="postgresql"
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """
@@ -47,11 +41,14 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     encoded_jwt = jwt.encode(payload=to_encode, key=cast(str, SECRET_KEY), algorithm=ALGORITHM)
     return str(encoded_jwt)
 
-def create_cookie(response: Response, body: Union[auth.SignUpRequest, auth.SignInRequest]) -> str:
+
+async def masuk(response: Response, body: SignInRequest) -> str:
     token_data: Dict[str, Any] = {
         "sub": body.user,
         "pw": body.password,
         "db": body.db,
+        "host": body.host,
+        "port": body.port,
         "type": "access"
     }
 
@@ -72,7 +69,8 @@ def create_cookie(response: Response, body: Union[auth.SignUpRequest, auth.SignI
 
     return "Login berhasil"
 
-def get_cookie(access_token: Optional[str] = Cookie(None)) -> Dict[str, str | Literal['sqlite', 'mysql', 'postgresql']]:
+
+async def get_cookie(access_token: Optional[str] = Cookie(None)) -> Dict[str, str | Literal['sqlite', 'mysql', 'postgresql']]:
     if not access_token:
         raise HTTPException(status_code=401, detail="Log in dulu yuk")
     try:
@@ -87,7 +85,7 @@ def get_cookie(access_token: Optional[str] = Cookie(None)) -> Dict[str, str | Li
     
     token_id: str = payload.get("sub") or ""
     if not token_id:
-        raise HTTPException(status_code=401, detail="Payload token tidak valid")
+        raise HTTPException(status_code=401, detail="Payload/username token tidak valid")
 
 
     token_type = payload.get("type")
@@ -97,17 +95,12 @@ def get_cookie(access_token: Optional[str] = Cookie(None)) -> Dict[str, str | Li
 
     return payload
 
-def masuk(response: Response, body: auth.SignInRequest) -> Any:
-    return create_cookie(response, body)
 
-def daftar(response: Response, body: auth.SignUpRequest) -> Any: 
-    return create_cookie(response, body)
-
-def keluar(response: Response) -> str: 
+async def keluar(response: Response) -> None: 
     response.delete_cookie(
         key="access_token",
         httponly=True,
         samesite="lax",
         # Pastikan path sama dengan set_cookie jika pernah diatur
     )
-    return "Berhasil keluar"
+    return

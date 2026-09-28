@@ -4,9 +4,10 @@ pydantic
 dotenv
 PyJwt
 types-PyJWT
+jinja2
 
 sqlmodel
 # Database drivers (pilih sesuai kebutuhan, jangan install semua kecuali diperlukan)
-# pymysql asyncmy # MySQL driver
-# psycopg2-binary asyncpg # PostgreSQL driver
+# asyncmy # MySQL driver
+# asyncpg # PostgreSQL driver
 # aiosqlite # SQLite driver

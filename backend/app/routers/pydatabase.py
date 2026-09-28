@@ -18,67 +18,33 @@ Endpoint:
     DELETE /database/delete/postgresql
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Depends, Query
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, HTTPException, Depends
 
-from ..services import auth, pydatabase as pyd
+from ..schemas.database import (CreateSQLiteRequest, CreateServerDBRequest,
+                                DeleteSQLiteRequest, DeleteServerDBRequest,
+                                MessageResponse, ShowSQLiteResponse,
+                                ShowServerDBResponse)
+from ..services import auth
 from ..services.pydatabase import Create, Show, Delete
 
 
-router = APIRouter(prefix="/database", tags=["Database Management"])
+router = APIRouter(prefix="/database", tags=["Backend - Database Management"])
 
 
-# ──────────────────────────────────────────────
-# REQUEST MODELS
-# ──────────────────────────────────────────────
-
-class CreateSQLiteRequest(BaseModel):
-    db_name: str = Field(..., description="Nama file database SQLite (tanpa ekstensi .db)")
-
-
-class CreateServerDBRequest(BaseModel):
-    db_name: str = Field(..., description="Nama database yang akan dibuat")
-    host: Optional[str] = Field(default="localhost", description="Host server")
-    port: Optional[int] = Field(default=None, description="Port server (opsional)")
-
-
-class DeleteSQLiteRequest(BaseModel):
-    db_name: str = Field(..., description="Nama file database SQLite (sertakan ekstensi .db)")
-
-
-class DeleteServerDBRequest(BaseModel):
-    db_name: str = Field(..., description="Nama database yang akan dihapus")
-    user: Optional[str] = Field(default="root")
-    password: Optional[str] = Field(default="")
-    host: Optional[str] = Field(default="localhost")
-    port: Optional[int] = Field(default=None)
-
-    @field_validator("db_name")
-    def validate_db_name(cls, value: str) -> str:
-        # Panggil fungsi validasi Anda di sini
-        # Contoh sederhana: pastikan tidak mengandung karakter aneh    
-        return pyd.validate_db_name(value)
-
-
-# ──────────────────────────────────────────────
-# RESPONSE MODELS
-# ──────────────────────────────────────────────
-
-class MessageResponse(BaseModel):
-    message: str
-
-
-class ShowSQLiteResponse(BaseModel):
-    total: int
-    databases: List[Dict[str, Any]]
-
-
-class ShowServerDBResponse(BaseModel):
-    total: int
-    databases: List[str]
-
+class KukiProteksi(dict[str, Any]):
+    """
+    Kamus kustom untuk kuki yang akan langsung melempar error 
+    jika data yang di-get() tidak ditemukan.
+    """
+    def get(self, key: str, default: Any = None) -> Any:
+        # Jika kunci tidak ada di kuki, langsung potong aliran program dengan error
+        if key not in self:
+            raise KeyError(f"Data kuki kritis '{key}' tidak ditemukan!")
+        
+        # Jika ada, kembalikan nilainya secara normal
+        return self[key]
 
 # ──────────────────────────────────────────────
 # CREATE DATABASE
@@ -106,16 +72,15 @@ async def create_sqlite(body: CreateSQLiteRequest) -> MessageResponse:
     summary="Buat database MySQL",
     description="Membuat database baru di server MySQL / MariaDB.",
 )
-async def create_mysql(body: CreateServerDBRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def create_mysql(body: CreateServerDBRequest, payload: dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
-        user = payload.get("sub")
-        password = payload.get("pw")
+        kuki=KukiProteksi(payload)
         result = await Create(
             db_name=body.db_name,
-            user=user,
-            password=password,
-            host=body.host,
-            port=body.port,
+            user=kuki.get("sub"),
+            password=kuki.get("pw"),
+            host=kuki.get("host"),
+            port=kuki.get("port")
         ).mysql()
         return MessageResponse(message=result)
     except ValueError as e:
@@ -130,14 +95,15 @@ async def create_mysql(body: CreateServerDBRequest, payload: Dict[str, Any] = De
     summary="Buat database PostgreSQL",
     description="Membuat database baru di server PostgreSQL.",
 )
-async def create_postgresql(body: CreateServerDBRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def create_postgresql(body: CreateServerDBRequest, payload: dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
+        kuki=KukiProteksi(payload)
         result = await Create(
             db_name=body.db_name,
-            user=payload.get("sub"),
-            password=payload.get("pw"),
-            host=body.host,
-            port=body.port,
+            user=kuki.get("sub"),
+            password=kuki.get("pw"),
+            host=kuki.get("host"),
+            port=kuki.get("port")
         ).postgresql()
         return MessageResponse(message=result)
     except ValueError as e:
@@ -156,14 +122,15 @@ async def create_postgresql(body: CreateServerDBRequest, payload: Dict[str, Any]
     summary="Lihat daftar database SQLite",
     description="Menampilkan semua file .db yang ditemukan di direktori yang ditentukan.",
 )
-async def show_sqlite(search_dir: str = ".") -> ShowSQLiteResponse:
+async def show_sqlite() -> ShowSQLiteResponse:
     try:
-        total, files = await Show().sqlite(search_dir=search_dir)
-        databases: List[Dict[str, Any]] = [
-            {"filename": f[0], "path": f[1], "size_bytes": f[2]}
-            for f in files
-        ]
-        return ShowSQLiteResponse(total=total, databases=databases)
+        total, files = await Show().sqlite()
+        # databases: List[Any] = [
+        #     # f.replace(".db", "")
+        #     f
+        #     for f in files
+        # ]
+        return ShowSQLiteResponse(total=total, databases=files)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -176,9 +143,15 @@ async def show_sqlite(search_dir: str = ".") -> ShowSQLiteResponse:
     summary="Lihat daftar database MySQL",
     description="Menampilkan semua database yang ada di server MySQL.",
 )
-async def show_mysql(payload: Dict[str, Any] = Depends(auth.get_cookie), host: str = Query(default="localhost"), port: Optional[int] = Query(...)) -> ShowServerDBResponse:
+async def show_mysql(payload: dict[str, Any] = Depends(auth.get_cookie)) -> ShowServerDBResponse:
     try:
-        total, databases = await Show(user=payload.get("sub"), password=payload.get("pw"), host=host, port=port).mysql()
+        kuki=KukiProteksi(payload)
+        total, databases = await Show(
+            user=kuki.get("sub"),
+            password=kuki.get("pw"),
+            host=kuki.get("host"),
+            port=kuki.get("port")
+        ).mysql()
         return ShowServerDBResponse(total=total, databases=databases)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -192,9 +165,15 @@ async def show_mysql(payload: Dict[str, Any] = Depends(auth.get_cookie), host: s
     summary="Lihat daftar database PostgreSQL",
     description="Menampilkan semua database yang ada di server PostgreSQL.",
 )
-async def show_postgresql(payload: Dict[str, Any] = Depends(auth.get_cookie), host: str = Query(default="localhost"), port: Optional[int] = Query(...)) -> ShowServerDBResponse:
+async def show_postgresql(payload: dict[str, Any] = Depends(auth.get_cookie)) -> ShowServerDBResponse:
     try:
-        total, databases = await Show(user=payload.get("sub"), password=payload.get("pw"), host=host, port=port).postgresql()
+        kuki=KukiProteksi(payload)
+        total, databases = await Show(
+            user=kuki.get("sub"),
+            password=kuki.get("pw"),
+            host=kuki.get("host"),
+            port=kuki.get("port")
+        ).postgresql()
         return ShowServerDBResponse(total=total, databases=databases)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -228,14 +207,15 @@ async def delete_sqlite(body: DeleteSQLiteRequest) -> MessageResponse:
     summary="Hapus database MySQL",
     description="Menghapus database dari server MySQL. Database sistem tidak bisa dihapus.",
 )
-async def delete_mysql(body: DeleteServerDBRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def delete_mysql(body: DeleteServerDBRequest, payload: dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
+        kuki=KukiProteksi(payload)
         result = await Delete(
             db_name=body.db_name,
-            user=payload.get("sub"),
-            password=payload.get("pw"),
-            host=body.host,
-            port=body.port,
+            user=kuki.get("sub"),
+            password=kuki.get("pw"),
+            host=kuki.get("host"),
+            port=kuki.get("port")
         ).mysql()
         return MessageResponse(message=result)
     except ValueError as e:
@@ -250,14 +230,15 @@ async def delete_mysql(body: DeleteServerDBRequest, payload: Dict[str, Any] = De
     summary="Hapus database PostgreSQL",
     description="Menghapus database dari server PostgreSQL. Database sistem tidak bisa dihapus.",
 )
-async def delete_postgresql(body: DeleteServerDBRequest, payload: Dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
+async def delete_postgresql(body: DeleteServerDBRequest, payload: dict[str, Any] = Depends(auth.get_cookie)) -> MessageResponse:
     try:
+        kuki=KukiProteksi(payload)
         result = await Delete(
             db_name=body.db_name,
-            user=payload.get("sub"),
-            password=payload.get("pw"),
-            host=body.host,
-            port=body.port,
+            user=kuki.get("sub"),
+            password=kuki.get("pw"),
+            host=kuki.get("host"),
+            port=kuki.get("port")
         ).postgresql()
         return MessageResponse(message=result)
     except ValueError as e:

@@ -23,38 +23,49 @@ Struktur Modul:
 """
 
 from typing import List, Optional, Any, Dict
-from sqlmodel import SQLModel, text
-from sqlalchemy import Connection, CursorResult, MetaData, Table, Column, inspect
+from datetime import date, datetime, time
+from decimal import Decimal
+from uuid import UUID
+
+from sqlmodel import text # SQLModel
+from sqlalchemy import (Connection, CursorResult, MetaData, Table,
+                        Column, inspect, Date, DateTime, Time,
+                        Integer, Float, Numeric,Boolean, Uuid)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine, AsyncSession, async_sessionmaker
 
 # Import validator nama tabel/db dari modul lain dalam package ini
-from .pydatabase import validate_db_name
-from .auth import TypeDB
+from .pydatabase import validate_db_name, DIREKTORI_DB
+from ..schemas.auth import TypeDB
 from ..core.enums import Indeks
 
-# ──────────────────────────────────────────────
-# KONFIGURASI & ENGINE
-# ──────────────────────────────────────────────
 
-class Config(SQLModel):
-    """
-    Model konfigurasi koneksi database.
-
-    Contoh penggunaan:
-    ------------------
-    cfg = Config(
-        host="localhost",
-        port=3306,
-        user="root",
-        password="secret",
-        database="toko_db"
-    )
-    """
-    host: str
-    port: int
-    user: str
-    password: str
-    database: str
+def coerce_value(value: Any, col_type: Any) -> Any:
+    """Konversi nilai dari JSON (umumnya str) ke tipe Python sesuai kolom."""
+    if value is None or not isinstance(value, str):
+        return value
+    try:
+        if isinstance(col_type, DateTime):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            # kolom TIMESTAMP tanpa timezone menolak datetime tz-aware
+            return dt if getattr(col_type, "timezone", False) else dt.replace(tzinfo=None)
+        if isinstance(col_type, Date):
+            return date.fromisoformat(value[:10])
+        if isinstance(col_type, Time):
+            return time.fromisoformat(value)
+        if isinstance(col_type, (Uuid, PG_UUID)):
+            return UUID(value)
+        if isinstance(col_type, Float):
+            return float(value)
+        if isinstance(col_type, Numeric):
+            return Decimal(value)
+        if isinstance(col_type, Integer):
+            return int(value)
+        if isinstance(col_type, Boolean):
+            return value.lower() in ("true", "1", "yes")
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Nilai '{value}' tidak valid untuk tipe {col_type}: {e}") from e
+    return value
 
 
 class GetEngine:
@@ -110,7 +121,7 @@ class GetEngine:
         db_name = path ke file .db, contoh: 'data/toko.db' atau ':memory:'
         """
         return create_async_engine(
-            f"sqlite+aiosqlite:///{self.db_name}",
+            f"sqlite+aiosqlite:///{DIREKTORI_DB}/{self.db_name}.db",
         )
 
     async def mysql(self) -> AsyncEngine:
@@ -160,17 +171,17 @@ async def list_tables(engine: AsyncEngine) -> List[str]:
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
     tabel = list_tables(engine)
     print(tabel)
     # Output: ['produk', 'pelanggan', 'transaksi']
     """
-    def execute_update_sync(sync_conn: Connection):
+    def fetch_tables(sync_conn: Connection):
         inspector: Any = inspect(sync_conn)
         return inspector.get_table_names()
 
     async with engine.begin() as conn:
-        list_table = await conn.run_sync(execute_update_sync)
+        list_table = await conn.run_sync(fetch_tables)
 
     return list_table
 
@@ -199,7 +210,7 @@ async def inspect_table_structure(engine: AsyncEngine, table_name: str) -> List[
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
     struktur = inspect_table_structure(engine, "produk")
     for kolom in struktur:
         print(kolom)
@@ -210,13 +221,22 @@ async def inspect_table_structure(engine: AsyncEngine, table_name: str) -> List[
     def execute_structure_sync(sync_conn: Connection):
         inspector: Any = inspect(sync_conn)
 
-        # 1. Ambil daftar kolom yang menjadi Primary Key pada tabel ini
-        # Mengembalikan dict seperti: {'constrained_columns': ['id'], 'name': 'pk_user'}    
+        # 1. Ambil Primary Key
         pk_constraint = inspector.get_pk_constraint(table_name)
         pk_columns = pk_constraint.get("constrained_columns", [])
 
-        columns_info = inspector.get_columns(table_name)
+        # 2. Ambil Foreign Keys (Sangat berguna untuk relasi seperti di phpMyAdmin)
+        fk_constraints = inspector.get_foreign_keys(table_name)
+        fk_mapping: Dict[str, Any] = {}
+        for fk in fk_constraints:
+            for local_col, referred_col in zip(fk["constrained_columns"], fk["referred_columns"]):
+                fk_mapping[local_col] = {
+                    "referred_table": fk["referred_table"],
+                    "referred_column": referred_col
+                }
 
+        # 3. Ambil Detail Kolom
+        columns_info = inspector.get_columns(table_name)
         result: List[Dict[str, Any]] = []
 
         for col in columns_info:
@@ -225,11 +245,12 @@ async def inspect_table_structure(engine: AsyncEngine, table_name: str) -> List[
             result.append({
                 "name":          col["name"],
                 "type":          col["type"],
-                "primary_key":   "Y" if col_name in pk_columns else None,
+                "primary_key":   "Y" if col_name in pk_columns else "N",
                 "nullable":      col["nullable"],
                 "autoincrement": col.get("autoincrement"),
-                "default":       col["default"],
+                "default":       col.get("default"),
                 "comment":       col.get("comment"),
+                "foreign_key":   fk_mapping.get(col_name) # Menambahkan info foreign key dinamis
             })
 
         return result
@@ -256,7 +277,7 @@ async def view_table_content(engine: AsyncEngine, table_name: str, limit: int = 
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
     data = view_table_content(engine, "produk", limit=3)
     for baris in data:
         print(baris)
@@ -282,9 +303,6 @@ async def view_table_content(engine: AsyncEngine, table_name: str, limit: int = 
 
         # Di SQLAlchemy async, gunakan .mappings().all() untuk langsung mendapatkan format dict
         rows = result.mappings().all()
-
-        if not rows:
-            return []
 
         # Konversi setiap row (tuple) menjadi dict {nama_kolom: nilai}
         return [dict(row) for row in rows]
@@ -314,7 +332,7 @@ async def create_dynamic_table(engine: AsyncEngine, table_name: str, columns_def
     ------------------
     from sqlalchemy import Integer, String, Float, Boolean
 
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
 
     create_dynamic_table(
         engine,
@@ -390,7 +408,7 @@ async def add_new_column(engine: AsyncEngine, table_name: str, column_name: str,
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
 
     add_new_column(engine, "produk", "deskripsi", "TEXT")
     # Output: Sukses: Kolom 'deskripsi' (TEXT) berhasil ditambahkan ke tabel 'produk'.
@@ -443,7 +461,7 @@ async def insert_dynamic_data(engine: AsyncEngine, table_name: str, data: Dict[s
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
 
     insert_dynamic_data(
         engine,
@@ -466,23 +484,29 @@ async def insert_dynamic_data(engine: AsyncEngine, table_name: str, data: Dict[s
 
         target_table = metadata.tables[table_name]
 
-        valid_columns = {col.name for col in target_table.columns}
-        filter_data = {k: v for k, v in data.items() if k in valid_columns}
+        filter_data = {
+            k: coerce_value(v, target_table.c[k].type)
+            for k, v in data.items() if k in target_table.c
+        }
 
         if not filter_data:
-            raise ValueError("Tidak ada kolom ynag cocok untuk dimasukkan ke dalam tabel")
-            
-        # insert().values() aman dari SQL Injection karena menggunakan parameterized query
-        query = target_table.insert().values(**filter_data)
-        sync_conn.execute(query)
+            raise ValueError("Tidak ada kolom yang cocok untuk dimasukkan ke dalam tabel")
+
+        sync_conn.execute(target_table.insert().values(**filter_data))
 
     async with engine.begin() as conn:
         await conn.run_sync(execute_insert_async)
-        
+
     return f"Sukses: Data berhasil ditambahkan ke tabel '{table_name}'."
 
 
-async def update_table_data(engine: AsyncEngine, table_name: str, update_values: Dict[str, Any], condition_str: str, condition_params: Dict[str, Any]) -> str:
+async def update_table_data(
+    engine: AsyncEngine,
+    table_name: str,
+    update_values: Dict[str, Any],
+    condition_str: str,
+    condition_params: Dict[str, Any]
+) -> str:
     """
     Perbarui isi data di tabel secara dinamis dengan kondisi WHERE.
 
@@ -500,7 +524,7 @@ async def update_table_data(engine: AsyncEngine, table_name: str, update_values:
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
 
     # Update stok dan harga produk dengan id = 1
     update_table_data(
@@ -530,25 +554,22 @@ async def update_table_data(engine: AsyncEngine, table_name: str, update_values:
 
         target_table = metadata.tables[table_name]
 
-        valid_columns = {col.name for col in target_table.columns}
-        filtered_updates = {k : v for k, v in update_values.items() if k in valid_columns}
+        filtered_updates = {
+            k: coerce_value(v, target_table.c[k].type)
+            for k, v in update_values.items() if k in target_table.c
+        }
 
         if not filtered_updates:
             raise ValueError("Tidak ada kolom yang diberikan untuk diperbarui.")
 
         query = target_table.update().where(text(condition_str)).values(**filtered_updates)
-
-        result: CursorResult[Any] = sync_conn.execute(query, condition_params)
-
+        result = sync_conn.execute(query, condition_params)
         return result.rowcount
 
     async with engine.begin() as conn:
         row_count = await conn.run_sync(execute_update_async)
 
-    return (
-        f"Sukses: {row_count} baris data pada tabel "
-        f"'{table_name}' berhasil diperbarui."
-    )
+    return f"Sukses: {row_count} baris data pada tabel '{table_name}' berhasil diperbarui."
 
 # ──────────────────────────────────────────────
 # OPERASI HAPUS DATA / TABEL
@@ -583,7 +604,7 @@ async def delete_one_row(engine: AsyncEngine, table_name: str, condition_str: st
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
 
     # Hapus produk dengan id = 3
     delete_one_row(
@@ -652,7 +673,7 @@ async def clear_table_data(engine: AsyncEngine, table_name: str, db_type: TypeDB
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
 
     pesan = clear_table_data(engine, "produk", db_type="sqlite")
     print(pesan)
@@ -711,7 +732,7 @@ async def drop_table(engine: AsyncEngine, table_name: str, db_type: TypeDB) -> s
 
     Contoh penggunaan:
     ------------------
-    engine = GetEngine("toko.db").sqlite()
+    engine = GetEngine("toko").sqlite()
 
     pesan = drop_table(engine, "produk_lama")
     print(pesan)
@@ -739,74 +760,6 @@ async def drop_table(engine: AsyncEngine, table_name: str, db_type: TypeDB) -> s
         return True
 
     async with engine.begin() as conn:
-        table_was_dropped = await conn.run_sync(execute_drop_sync)
+        await conn.run_sync(execute_drop_sync)
         
-        if not table_was_dropped:
-            raise ValueError(f"Tabel '{table_name}' tidak ditemukan di database.")
-
     return f"Sukses: Tabel '{table_name}' berhasil dihapus secara permanen!"
-
-
-# ──────────────────────────────────────────────
-# CONTOH PENGGUNAAN LENGKAP (jalankan sebagai script)
-# ──────────────────────────────────────────────
-"""
-if __name__ == "__main__":
-    from sqlalchemy import Integer, String, Float, Boolean
-
-    # 1. Buat engine SQLite (in-memory untuk testing)
-    engine = GetEngine(db_name=":memory:").sqlite()
-    print("Engine dibuat:", engine)
-
-    # 2. Buat tabel 'produk'
-    print(create_dynamic_table(
-        engine,
-        table_name="produk",
-        columns_def={
-            "id"       : Integer,
-            "nama"     : String(100),
-            "harga"    : Float,
-            "stok"     : Integer,
-            "is_aktif" : Boolean,
-        }
-    ))
-
-    # 3. Lihat daftar tabel
-    print("Tabel:", list_tables(engine))
-
-    # 4. Lihat struktur tabel
-    print("Struktur 'produk':")
-    for col in inspect_table_structure(engine, "produk"):
-        print(" ", col)
-
-    # 5. Tambah kolom baru
-    add_new_column(engine, "produk", "deskripsi", "TEXT")
-
-    # 6. Insert data
-    for row in [
-        {"nama": "Laptop ASUS",  "harga": 12500000.0, "stok": 15, "is_aktif": True},
-        {"nama": "Mouse Logitech","harga": 350000.0,  "stok": 50, "is_aktif": True},
-        {"nama": "Keyboard Mech", "harga": 750000.0,  "stok": 0,  "is_aktif": False},
-    ]:
-        print(insert_dynamic_data(engine, "produk", row))
-
-    # 7. Lihat isi tabel
-    print("Isi tabel 'produk':")
-    for baris in view_table_content(engine, "produk", limit=10):
-        print(" ", baris)
-
-    # 8. Update data
-    update_table_data(
-        engine,
-        table_name       = "produk",
-        update_values    = {"stok": 100, "harga": 11000000.0},
-        condition_str    = "nama = :target_nama",
-        condition_params = {"target_nama": "Laptop ASUS"},
-    )
-
-    # 9. Kosongkan tabel
-    print(clear_table_data(engine, "produk", db_type="sqlite"))
-
-    # 10. Hapus tabel
-    print(drop_table(engine, "produk"))
-"""

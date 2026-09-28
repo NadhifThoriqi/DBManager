@@ -1,0 +1,160 @@
+/* =========================================================================
+   designer.css — Halaman "Designer" (diagram relasi antar tabel)
+   ========================================================================= */
+
+.designer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.designer-toolbar__right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+}
+.zoom-group button {
+  background: none; border: none; color: var(--text-secondary);
+  padding: 5px 8px; border-radius: 5px; cursor: pointer;
+}
+.zoom-group button:hover { background: var(--bg-3); color: var(--text-primary); }
+.zoom-group__value {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  padding: 0 6px;
+  min-width: 42px;
+  text-align: center;
+}
+
+.designer-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.designer-legend span { display: flex; align-items: center; gap: 5px; }
+.designer-legend svg { flex-shrink: 0; }
+
+.designer-canvas-wrap {
+  position: relative;
+  height: calc(100vh - 230px);
+  min-height: 460px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-1);
+  background-image:
+    linear-gradient(var(--border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px);
+  background-size: 28px 28px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.designer-canvas-wrap.panning { cursor: grabbing; }
+
+.designer-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.designer-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.er-table {
+  position: absolute;
+  width: 236px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
+  user-select: none;
+}
+.er-table.dragging { box-shadow: var(--shadow-pop); z-index: 40; border-color: var(--accent); }
+
+.er-table__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border-default);
+  font-weight: 700;
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  cursor: grab;
+  touch-action: none;
+}
+.er-table__head:active { cursor: grabbing; }
+.er-table__head svg { flex-shrink: 0; color: var(--accent); }
+.er-table__head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.er-table__rows { display: flex; flex-direction: column; }
+.er-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.er-row:last-child { border-bottom: none; }
+.er-row.is-pk { background: rgba(79,209,197,0.06); }
+.er-row__icon { width: 13px; flex-shrink: 0; display: flex; align-items: center; color: var(--text-tertiary); }
+.er-row.is-pk .er-row__icon { color: var(--accent); }
+.er-row.is-fk .er-row__icon--fk { color: var(--engine-postgresql); }
+.er-row__name { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary); font-weight: 600; }
+.er-row.is-pk .er-row__name { color: var(--accent); }
+.er-row__type { color: var(--text-tertiary); font-size: 10.5px; flex-shrink: 0; }
+.er-row__badges { display: flex; gap: 3px; flex-shrink: 0; }
+.er-row__nn {
+  font-size: 9px; font-weight: 800; color: var(--amber);
+  border: 1px solid rgba(242,184,75,0.4); border-radius: 3px; padding: 0 3px;
+}
+
+.designer-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.designer-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.designer-status .spinner { width: 13px; height: 13px; border-width: 2px; }
+
+@media (max-width: 860px) {
+  .designer-canvas-wrap {
+    height: 65vh;
+    min-height: 340px;
+  }
+  .designer-toolbar { gap: 8px; }
+  .designer-legend { display: none; }
+  .designer-toolbar__right { width: 100%; justify-content: space-between; }
+}
