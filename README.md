@@ -1,246 +1,189 @@
 # DBManager
 
-DBManager adalah aplikasi web berbasis **FastAPI** untuk mengelola database (SQLite, MySQL, dan PostgreSQL) beserta tabel dan isi datanya melalui satu antarmuka (UI) maupun REST API. Aplikasi ini terdiri dari dua bagian utama:
+Konsol admin berbasis web untuk mengelola database **SQLite**, **MySQL**, dan **PostgreSQL** dari satu antarmuka, mirip phpMyAdmin versi ringan. Backend dibangun dengan **FastAPI + SQLAlchemy (async)**, frontend berupa **vanilla JavaScript (ES Modules)** tanpa framework dan tanpa proses build.
 
-- **Backend** — REST API (FastAPI) untuk autentikasi, manajemen database, dan manajemen tabel.
-- **Frontend** — antarmuka web statis (HTML/CSS/JavaScript) yang dikirim langsung oleh FastAPI, dipakai untuk berinteraksi dengan API secara visual (mirip phpMyAdmin sederhana).
+## Fitur
 
----
+- **Autentikasi berbasis cookie**: login dengan kredensial server database (user, password, host, port, tipe DB). Sesi disimpan sebagai JWT di cookie `HttpOnly`.
+- **Manajemen database**: buat, lihat daftar, dan hapus database untuk SQLite, MySQL, dan PostgreSQL. Database sistem (`mysql`, `information_schema`, `postgres`, `template0/1`, dll.) dilindungi dari penghapusan.
+- **Operasi tabel**:
+  - lihat daftar tabel, struktur kolom (termasuk primary key dan foreign key), dan isi data
+  - buat tabel baru dengan definisi kolom dan indeks (`primary`, `unique`, `index`, `fulltext`, `spatial`)
+  - tambah kolom (`ALTER TABLE`)
+  - insert, update, dan hapus baris
+  - kosongkan tabel (`DELETE` / `TRUNCATE`) dan hapus tabel (`DROP`)
+- **Designer**: diagram relasi antar tabel (kartu tabel dan garis foreign key) yang bisa di-drag, di-pan, dan di-zoom, termasuk pinch-to-zoom di layar sentuh. Posisi kartu diingat per database.
+- **Konversi tipe otomatis**: nilai dari JSON (misalnya string tanggal ISO atau UUID) dikonversi sesuai tipe kolom sebelum dikirim ke database, sehingga driver yang ketat seperti `asyncpg` tidak menolaknya.
+- **Dokumentasi API interaktif** bawaan FastAPI di `/docs` dan `/redoc`.
 
-## 1. Cara Kerja Program
-
-### 1.1 Alur Umum
-
-1. `main.py` adalah **entry point** aplikasi. Saat dijalankan, ia membuat instance `FastAPI`, mengaktifkan CORS, mem-mount folder statis frontend (`/assets`), lalu mendaftarkan dua kelompok router:
-   - `backend.run` → seluruh endpoint API (`/auth`, `/database`, `/table`)
-   - `frontend.run` → endpoint yang merender halaman `index.html`
-2. Pengguna membuka halaman utama (`/`) yang berisi UI DBManager (dibangun dengan JavaScript modular di `frontend/assets/js`).
-3. Pengguna **login** melalui `POST /auth/signin` dengan mengisi kredensial database (username, password, host, port, dan jenis database: `sqlite` / `mysql` / `postgresql`).
-4. Kredensial tersebut dikemas menjadi **JWT (JSON Web Token)** dan disimpan sebagai **cookie HTTPOnly** (`access_token`) di browser — bukan disimpan di server. Ini berarti server bersifat *stateless*: setiap request membawa kredensialnya sendiri di dalam cookie yang telah dienkripsi.
-5. Setiap kali endpoint yang membutuhkan koneksi ke MySQL/PostgreSQL dipanggil, FastAPI akan menjalankan dependency `get_cookie` yang membaca dan memvalidasi JWT dari cookie tersebut, lalu mengambil kembali kredensial (`user`, `password`, `host`, `port`, `db`) untuk membuat koneksi database secara dinamis.
-6. Semua operasi database dijalankan secara **asynchronous** menggunakan SQLAlchemy Async Engine (`aiosqlite`, `asyncmy`, `asyncpg`), sehingga performa tetap baik meski menangani banyak request bersamaan.
-
-### 1.2 Struktur Direktori
+## Struktur Proyek
 
 ```
 DBManager/
-├── main.py                     # Entry point aplikasi FastAPI
-├── requirements.txt             # Daftar dependensi Python
-├── .env.example                 # Contoh file environment variable
-│
-├── backend/                     # Seluruh logika backend (API)
-│   ├── __init__.py               # Menggabungkan semua router backend
+├── main.py                  # Entry point FastAPI (CORS, static files, router)
+├── requirements.txt
+├── .env.example             # Contoh konfigurasi environment
+├── sql/                     # File database SQLite (dibuat otomatis)
+├── backend/
+│   ├── __init__.py          # Menggabungkan semua router backend
 │   └── app/
-│       ├── core/
-│       │   └── enums.py          # Enum jenis indeks kolom (PRIMARY, UNIQUE, dst)
-│       ├── routers/               # Definisi endpoint (HTTP layer)
-│       │   ├── auth.py              # /auth/signin, /auth/logout
-│       │   ├── pydatabase.py        # /database/create, /show, /delete
-│       │   └── pytable.py           # /table/list, /structure, /content, dst
-│       ├── schemas/                # Model Pydantic (validasi request/response)
-│       │   ├── auth.py
-│       │   ├── database.py
-│       │   └── table.py
-│       └── services/                # Logika bisnis (Service layer)
-│           ├── auth.py               # Pembuatan & validasi JWT/cookie
-│           ├── pydatabase.py         # Create/Show/Delete database
-│           └── pytable.py            # CRUD tabel & data
-│
-└── frontend/                    # Antarmuka web (UI)
-    ├── __init__.py                # Router untuk merender index.html
-    ├── index.html                 # Halaman utama
+│       ├── core/            # Enum bersama (jenis indeks)
+│       ├── routers/         # Endpoint: auth, pydatabase, pytable
+│       ├── schemas/         # Model request/response (Pydantic)
+│       └── services/        # Logika bisnis: auth, pydatabase, pytable
+└── frontend/
+    ├── __init__.py          # Router yang menyajikan index.html
+    ├── index.html
     └── assets/
-        ├── css/                    # Styling UI
-        └── js/                     # Logika UI (API client, state, views)
+        ├── css/             # base, layout, components, auth, designer
+        └── js/
+            ├── app.js       # Entry point, App Shell, dan routing antar view
+            ├── config.js    # Base URL API (disimpan di localStorage)
+            ├── state.js     # State global sederhana
+            ├── api/         # Pembungkus fetch: client, auth, database, table
+            ├── ui/          # Modal, toast, ikon, helper
+            └── views/       # auth, dashboard, databases, tables, designer
 ```
 
-### 1.3 Konsep Arsitektur
+Pemisahan tanggung jawab di backend: **router** hanya berisi definisi endpoint, **schemas** berisi validasi input, dan seluruh logika ada di **services**.
 
-Backend mengikuti pola **Router → Schema → Service**:
+## Prasyarat
 
-| Layer | Tugas |
-|---|---|
-| **Router** (`routers/`) | Menentukan endpoint HTTP (path, method), menangani request/response, dan meneruskan pekerjaan ke *service*. |
-| **Schema** (`schemas/`) | Mendefinisikan bentuk data (Pydantic model) untuk validasi otomatis input & output. |
-| **Service** (`services/`) | Berisi seluruh logika bisnis nyata: membuat koneksi database, menjalankan query SQL, memproses data. |
+- Python 3.11 atau lebih baru (`StrEnum` dipakai di kode)
+- Salah satu server database (opsional untuk SQLite): MySQL/MariaDB atau PostgreSQL
 
-Pemisahan ini membuat kode lebih mudah dirawat: jika logika database berubah, cukup ubah file di `services/` tanpa menyentuh endpoint API.
-
-### 1.4 Fitur Utama API
-
-**Autentikasi (`/auth`)**
-- `POST /auth/signin` — Login dan membuat cookie JWT berisi kredensial database.
-- `POST /auth/logout` — Menghapus cookie sesi.
-
-**Manajemen Database (`/database`)**
-- `POST /database/create/{sqlite|mysql|postgresql}` — Membuat database baru.
-- `GET /database/show/{sqlite|mysql|postgresql}` — Menampilkan daftar database.
-- `DELETE /database/delete/{sqlite|mysql|postgresql}` — Menghapus database (database sistem dilindungi otomatis).
-
-**Manajemen Tabel (`/table`)**
-- `POST /table/list` — Daftar tabel dalam database.
-- `POST /table/structure` — Struktur kolom tabel.
-- `POST /table/content` — Isi data tabel.
-- `POST /table/create` — Membuat tabel baru secara dinamis.
-- `POST /table/column/add` — Menambah kolom baru.
-- `POST /table/insert` — Menambah satu baris data.
-- `PUT /table/update` — Memperbarui data berdasarkan kondisi.
-- `DELETE /table/row` — Menghapus satu baris data.
-- `DELETE /table/clear` — Mengosongkan seluruh isi tabel.
-- `DELETE /table/drop` — Menghapus tabel secara permanen.
-
-Semua endpoint di atas terdokumentasi otomatis oleh FastAPI dan dapat dicoba langsung lewat **Swagger UI** di `/docs` (lihat bagian [Menjalankan Program](#3-cara-menjalankan-program)).
-
----
-
-## 2. Cara Pemasangan (Instalasi Library & Framework)
-
-### 2.1 Prasyarat
-
-- **Python 3.11+** (karena memakai `enum.StrEnum`, fitur baru di Python 3.11)
-- `pip` sudah terpasang
-- (Opsional) Server **MySQL/MariaDB** dan/atau **PostgreSQL** jika ingin memakai selain SQLite
-
-### 2.2 Buat Virtual Environment (disarankan)
+## Instalasi
 
 ```bash
-python3 -m venv venv
+# 1. Buat dan aktifkan virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# Aktivasi di Linux/Mac
-source venv/bin/activate
-
-# Aktivasi di Windows
-venv\Scripts\activate
-```
-
-### 2.3 Install Dependensi Utama
-
-Install seluruh library wajib yang tercantum di `requirements.txt`:
-
-```bash
+# 2. Install dependensi
 pip install -r requirements.txt
+
+# 3. Install driver database sesuai kebutuhan (pilih yang dipakai saja)
+pip install aiosqlite            # SQLite
+pip install asyncmy              # MySQL / MariaDB
+pip install asyncpg              # PostgreSQL
 ```
 
-Isi `requirements.txt`:
+> **Catatan:** kode memakai `from dotenv import load_dotenv`, yang berasal dari paket **`python-dotenv`**. Jika muncul `ImportError` atau `load_dotenv` tidak ditemukan, jalankan `pip install python-dotenv` dan ganti baris `dotenv` di `requirements.txt` menjadi `python-dotenv`.
 
-```
-fastapi
-uvicorn
-pydantic
-dotenv
-PyJwt
-types-PyJWT
-jinja2
-sqlmodel
-```
+## Konfigurasi
 
-### 2.4 Install Driver Database (sesuai kebutuhan)
-
-Driver database **tidak** diinstal otomatis oleh `requirements.txt` (dikomentari) karena tidak semua orang memakai ketiga jenis database. Pilih sesuai yang akan dipakai:
-
-```bash
-# Untuk SQLite (disarankan selalu diinstal, driver ringan)
-pip install aiosqlite
-
-# Untuk MySQL / MariaDB
-pip install asyncmy
-
-# Untuk PostgreSQL
-pip install asyncpg
-```
-
-> 💡 Jika hanya ingin mencoba aplikasi dengan cepat, cukup install `aiosqlite` karena SQLite tidak membutuhkan server database eksternal.
-
-### 2.5 Konfigurasi Environment Variable
-
-Buat file `.env` di root folder (sejajar dengan `main.py`), isinya menyalin dari `.env.example`:
+Salin `.env.example` menjadi `.env`, lalu isi `SECRET_KEY` dengan string acak yang panjang:
 
 ```bash
 cp .env.example .env
 ```
 
-Lalu isi `SECRET_KEY` dengan string acak yang aman (dipakai untuk menandatangani JWT):
-
 ```env
-SECRET_KEY = "ganti-dengan-string-rahasia-yang-panjang-dan-acak"
+SECRET_KEY="isi_dengan_string_acak_yang_panjang"
 ```
 
-⚠️ **Penting:** Jangan pernah membiarkan `SECRET_KEY` default atau mengunggahnya ke repository publik, karena kunci ini melindungi cookie autentikasi pengguna.
+Membuat kunci acak:
 
----
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
 
-## 3. Cara Menjalankan Program
+Aplikasi akan berhenti dengan `RuntimeError` saat startup jika `SECRET_KEY` tidak ditemukan.
 
-### 3.1 Jalankan Server
-
-Ada dua cara menjalankan aplikasi:
-
-**Cara 1 — Langsung lewat Python:**
+## Menjalankan
 
 ```bash
 python main.py
 ```
 
-**Cara 2 — Lewat Uvicorn (disarankan untuk development, mendukung auto-reload):**
+Server berjalan di `http://127.0.0.1:2606` dengan auto-reload. Cara lain:
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 2606 --reload
 ```
 
-Setelah berjalan, server dapat diakses di:
+| Alamat | Fungsi |
+|---|---|
+| `http://127.0.0.1:2606/` | Antarmuka web |
+| `http://127.0.0.1:2606/docs` | Swagger UI |
+| `http://127.0.0.1:2606/health` | Health check |
 
-- **UI DBManager**: http://localhost:2606/thorix/
-- **Dokumentasi API (Swagger UI)**: http://localhost:2606/thorix/docs
-- **Dokumentasi API (ReDoc)**: http://localhost:2606/thorix/redoc
-- **Health check**: http://localhost:2606/thorix/health
+Aplikasi dikonfigurasi dengan `root_path="/thorix"` agar sinkron dengan reverse proxy Nginx pada path `/thorix/`. Aset frontend pada `index.html` juga dimuat lewat prefix tersebut. Jika Anda menjalankannya tanpa Nginx atau memakai path lain, sesuaikan `root_path` di `main.py` dan tautan aset di `frontend/index.html`.
 
-> ℹ️ Aplikasi ini menggunakan `root_path="/thorix"` (lihat `main.py`), yang berarti seluruh route otomatis berada di bawah prefix `/thorix`. Ini biasanya digunakan saat aplikasi dijalankan di belakang reverse proxy seperti Nginx. Jika ingin menghapus prefix ini untuk pengujian lokal biasa, ubah/hapus parameter `root_path` pada `FastAPI(...)` di `main.py`.
+## Cara Pakai
 
-### 3.2 Login Pertama Kali
+1. Buka antarmuka web dan login dengan memilih **tipe database**, mengisi **host**, **port**, **username**, dan **password**.
+   - SQLite tidak memakai kredensial server (isi port `0`).
+   - Port bawaan: MySQL `3306`, PostgreSQL `5432`.
+2. Buka **Databases** untuk membuat atau menghapus database.
+3. Buka **Tables**, pilih database lalu tabel, kemudian gunakan tab *Data*, *Struktur*, *Insert Row*, *Tambah Kolom*, atau *Danger Zone*.
+4. Buka **Designer** untuk melihat relasi antar tabel.
 
-1. Buka UI di browser (`http://localhost:2606/thorix/`).
-2. Isi form login dengan:
-   - **Jenis database**: `sqlite`, `mysql`, atau `postgresql`
-   - **Username, Password, Host, Port** (untuk SQLite, kredensial ini tidak wajib dipakai secara aktif, tapi tetap harus diisi karena bagian dari skema request)
-3. Setelah login berhasil, cookie `access_token` otomatis tersimpan di browser dan Anda dapat langsung mengelola database & tabel dari UI.
+Jika API berjalan di alamat lain, ubah lewat tombol **Server** di topbar. Nilainya disimpan di `localStorage` browser.
 
-### 3.3 Contoh Penggunaan API Secara Langsung (opsional)
+## Ringkasan API
 
-Membuat database SQLite baru via `curl`:
+Semua endpoint selain `/auth/signin` membutuhkan cookie `access_token`.
 
-```bash
-curl -X POST "http://localhost:2606/thorix/database/create/sqlite" \
-  -H "Content-Type: application/json" \
-  -d '{"db_name": "toko"}'
+**Auth**
+
+| Method | Endpoint | Fungsi |
+|---|---|---|
+| POST | `/auth/signin` | Login dan set cookie sesi |
+| POST | `/auth/logout` | Hapus cookie sesi |
+
+**Database**
+
+| Method | Endpoint | Fungsi |
+|---|---|---|
+| POST | `/database/create/{sqlite\|mysql\|postgresql}` | Buat database |
+| GET | `/database/show/{sqlite\|mysql\|postgresql}` | Daftar database |
+| DELETE | `/database/delete/{sqlite\|mysql\|postgresql}` | Hapus database |
+
+**Tabel** (body selalu memuat `db_name`)
+
+| Method | Endpoint | Fungsi |
+|---|---|---|
+| POST | `/table/list` | Daftar tabel |
+| POST | `/table/structure` | Struktur kolom |
+| POST | `/table/content` | Isi tabel (`limit` 1–1000) |
+| POST | `/table/create` | Buat tabel |
+| POST | `/table/column/add` | Tambah kolom |
+| POST | `/table/insert` | Insert satu baris |
+| PUT | `/table/update` | Update baris dengan kondisi `WHERE` |
+| DELETE | `/table/row` | Hapus baris dengan kondisi `WHERE` |
+| DELETE | `/table/clear` | Kosongkan tabel |
+| DELETE | `/table/drop` | Hapus tabel permanen |
+
+Contoh update dengan placeholder berparameter:
+
+```json
+{
+  "db_name": "toko_db",
+  "table_name": "produk",
+  "update_values": { "stok": 50, "harga": 11000000.0 },
+  "condition_str": "id = :target_id",
+  "condition_params": { "target_id": 1 }
+}
 ```
 
-Login untuk mendapatkan cookie sesi:
+## Catatan Keamanan
 
-```bash
-curl -X POST "http://localhost:2606/thorix/auth/signin" \
-  -H "Content-Type: application/json" \
-  -c cookies.txt \
-  -d '{"user":"root","password":"secret","host":"localhost","port":3306,"db":"mysql"}'
-```
+Proyek ini adalah alat admin. Baca poin berikut sebelum memakainya di luar mesin lokal:
 
-Selanjutnya gunakan `cookies.txt` (`-b cookies.txt`) pada request lain yang membutuhkan sesi login (misalnya operasi tabel MySQL/PostgreSQL).
+- **Password database ikut tersimpan di JWT** (klaim `pw`). JWT hanya ditandatangani, tidak dienkripsi, sehingga isinya bisa dibaca siapa pun yang memegang cookie. Pertimbangkan menyimpan kredensial di sisi server (session store) atau mengenkripsinya.
+- **Cookie** diatur `secure=False`. Ubah ke `True` di `services/auth.py` saat dilayani lewat HTTPS.
+- **CORS** saat ini `allow_origins=["*"]` dengan `allow_credentials=True`. Batasi ke origin yang dipercaya untuk produksi.
+- **`condition_str`** pada update dan delete berupa fragmen SQL mentah dari klien. Nilainya diparameterisasi, tetapi string kondisinya sendiri tidak. Jangan buka aplikasi ini ke pengguna yang tidak dipercaya.
+- **`add_new_column`** menyusun `ALTER TABLE` dari nama kolom dan tipe yang dikirim klien tanpa validasi identifier di layanan.
+- Endpoint **clear**, **drop**, dan **delete database** bersifat permanen dan tidak bisa dibatalkan.
 
-### 3.4 Menghentikan Server
+## Teknologi
 
-Tekan `CTRL + C` di terminal tempat server berjalan.
+- **Backend:** FastAPI, Uvicorn, SQLAlchemy async, SQLModel, Pydantic, PyJWT, Jinja2
+- **Driver:** aiosqlite, asyncmy, asyncpg
+- **Frontend:** JavaScript ES Modules, CSS murni
 
----
+## Lisensi
 
-## 4. Catatan Keamanan
-
-- Password database dikirim & disimpan di dalam JWT (cookie HTTPOnly), **bukan** di database aplikasi — pastikan `SECRET_KEY` benar-benar rahasia.
-- Set `secure=True` pada cookie (`backend/app/services/auth.py`) jika aplikasi sudah berjalan di atas HTTPS pada production.
-- Semua nama tabel/database divalidasi (`validate_db_name`) agar hanya berisi huruf, angka, dan underscore, untuk mencegah SQL Injection lewat nama identifier.
-- Query data (insert/update/delete) menggunakan *parameterized query* SQLAlchemy sehingga aman dari SQL Injection pada bagian nilai (value).
-- Database sistem bawaan MySQL/PostgreSQL (misalnya `mysql`, `information_schema`, `postgres`, `template0/1`) dilindungi dari penghapusan.
-
----
-
-## 5. Lisensi
-
-Silakan sesuaikan bagian ini dengan lisensi yang ingin digunakan untuk proyek Anda (misalnya MIT, Apache 2.0, atau proprietary/internal use only).
+Belum ditentukan. Tambahkan berkas `LICENSE` sesuai kebutuhan.
