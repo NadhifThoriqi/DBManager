@@ -122,6 +122,8 @@ class GetEngine:
         """
         return create_async_engine(
             f"sqlite+aiosqlite:///{DIREKTORI_DB}/{self.db_name}.db",
+            pool_size=10,
+            max_overflow=20
         )
 
     async def mysql(self) -> AsyncEngine:
@@ -135,7 +137,9 @@ class GetEngine:
             f"mysql+asyncmy://{self.user}:{self.password}@{self.host}:{self.port}/{self.db_name}",
             echo=False,           # Set True untuk melihat query SQL di terminal (opsional)
             pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-            pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+            pool_size=10,
+            max_overflow=20
         )
 
     async def postgresql(self) -> AsyncEngine:
@@ -147,7 +151,9 @@ class GetEngine:
             self.port = 5432
         return create_async_engine(
             f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.db_name}",
-            pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+            pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+            pool_size=10,
+            max_overflow=20
         )
 
 

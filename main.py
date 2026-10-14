@@ -72,4 +72,4 @@ app.include_router(backend.run)
 app.include_router(frontend.run)
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host='0.0.0.0', port=2606, reload=True) # nosec
+    uvicorn.run("main:app", host='0.0.0.0', port=2606) # nosec

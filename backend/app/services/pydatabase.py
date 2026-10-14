@@ -210,7 +210,8 @@ class Create:
                 f"sqlite+aiosqlite:///{DIREKTORI_DB}/{self.db_name}.db",
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+
             )
             # Membuka koneksi memicu pembuatan file .db secara fisik
             async with engine.connect():
@@ -244,7 +245,9 @@ class Create:
                 url,
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_size=10,
+                max_overflow=20
             )
             conn = await engine.connect()
             await conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {self.db_name}"))
@@ -280,7 +283,9 @@ class Create:
                 isolation_level="AUTOCOMMIT",
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_size=10,
+                max_overflow=20
             )
             
             conn = await engine.connect()
@@ -393,7 +398,9 @@ class Show:
                 url,
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_size=10,
+                max_overflow=20
             )
             conn = await engine.connect()
             rows = [row[0] for row in (await conn.execute(text("SHOW DATABASES"))).fetchall()]
@@ -428,7 +435,9 @@ class Show:
                 url,
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_size=10,
+                max_overflow=20
             )
             conn = await engine.connect()
             # Hanya ambil database bukan template (template0 & template1 disembunyikan)
@@ -558,7 +567,9 @@ class Delete:
                 url,
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_size=10,
+                max_overflow=20
             )
             conn = await engine.connect()
             await conn.execute(text(f"DROP DATABASE IF EXISTS {self.db_name}"))
@@ -606,7 +617,9 @@ class Delete:
                 isolation_level="AUTOCOMMIT",
                 echo=True,           # Set True untuk melihat query SQL di terminal (opsional)
                 pool_recycle=3600,   # Mencegah disconnect otomatis dari MySQL
-                pool_pre_ping=True   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_pre_ping=True,   # Memastikan koneksi valid sebelum mengeksekusi query
+                pool_size=10,
+                max_overflow=20
             )
             conn = await engine.connect()
             # WITH (FORCE): putus paksa koneksi aktif ke DB ini sebelum drop (PG 13+)
